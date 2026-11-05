@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Agent, AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
+import type { ToolPresentationPolicyResolver } from "./tool-presentation-policy";
+import { resolvePresentation, SEMANTIC_DISCOVERY_POLICY_ID } from "./tool-presentation-policy";
 import { isRecord, logger, prompt, stringProperty, structuredCloneJSON, untilAborted } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
@@ -50,7 +52,7 @@ import {
 	xdevDocsFor,
 	xdevEntries,
 } from "../tools/xdev";
-import type { EditModeSetting } from "../edit/settings";
+import { type EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import { resolveEditMode } from "../utils/edit-mode";
 import {
 	extractPermissionLocations,
@@ -280,7 +282,7 @@ function systemPromptDigest(blocks: readonly string[]): string {
 }
 
 /** The digest a branch entry records, `undefined` for a malformed record, or `null` when it is not a record. */
-export function promptDigestOfEntry(entry: SessionEntry): string | undefined | null {
+function promptDigestOfEntry(entry: SessionEntry): string | undefined | null {
 	if (entry.type !== "custom" || entry.customType !== SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE) return null;
 	return typeof entry.data === "string" ? entry.data : undefined;
 }
@@ -349,6 +351,10 @@ interface XdevMountNoticeProjection {
 export class SessionTools {
 	readonly #host: SessionToolsHost;
 	#autoApprove: boolean;
+	/**
+	 * Resolver for the current tool presentation policy.
+	 */
+	#toolPresentationPolicyResolver: ToolPresentationPolicyResolver | undefined;
 	#toolRegistry: Map<string, AgentTool>;
 	#createVibeTools: (() => AgentTool[]) | undefined;
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
@@ -387,8 +393,6 @@ export class SessionTools {
 	 * the same array scans just the appended entries.
 	 */
 	#recordedDigestScan: { branch: readonly SessionEntry[]; scanned: number; digest: string | undefined } | undefined;
-	/** {@link currentPromptDigest} for the base prompt array it hashed. */
-	#currentPromptDigest: { base: readonly string[]; digest: string } | undefined;
 	/**
 	 * Dynamic (`xd://`) devices the model has already been told are mounted.
 	 * Seeded lazily from persisted history on resume (see
@@ -964,8 +968,8 @@ export class SessionTools {
 		} as const;
 	}
 
-	/** Resolves the edit mode for the active model and settings; `"none"` when the edit tool is disabled. */
-	resolveActiveEditMode(): EditModeSetting {
+	/** Resolves the edit mode for the active model and settings. */
+	resolveActiveEditMode(): EditMode {
 		return resolveEditMode(this.#getEditModeSession());
 	}
 
@@ -996,7 +1000,7 @@ export class SessionTools {
 	 * on or off (#14200). The kept key makes a later switch back to the rendered model a no-op, and a
 	 * deliberate switch (`/model`, `setModel`) compares against the model the prompt describes.
 	 */
-	async syncAfterModelChange(previousEditMode: EditModeSetting, options?: { retryFallback?: boolean }): Promise<void> {
+	async syncAfterModelChange(previousEditMode: EditMode, options?: { retryFallback?: boolean }): Promise<void> {
 		const currentEditMode = this.resolveActiveEditMode();
 		if (options?.retryFallback) {
 			const inlineDescriptorsChanged = this.#currentInlineDescriptors() !== this.#promptInlineDescriptors;
@@ -1380,6 +1384,37 @@ export class SessionTools {
 		const previousMounted = new Set(this.#xdev?.mountedNames ?? []);
 		const previousActiveToolNames = this.getActiveToolNames();
 		const previousEnabledToolNames = this.#enabledToolNames;
+		// Tool-presentation policy: filter MCP/extension names.
+		if (this.#toolPresentationPolicyResolver) {
+			const livePolicy = this.#toolPresentationPolicyResolver();
+			if (livePolicy && livePolicy.id === SEMANTIC_DISCOVERY_POLICY_ID) {
+				const allEnabled = new Set([...validToolNames, ...mountNames]);
+				const policySelection = resolvePresentation(
+					this.#toolRegistry,
+					livePolicy,
+					new Set(validToolNames),
+					allEnabled,
+					name => this.hasBuiltInTool(name),
+				);
+				if (policySelection) {
+					const allowedDirect = new Set(policySelection.direct);
+					const allowedMounted = new Set(policySelection.mounted);
+					// Remove unselected MCP/extension names from validToolNames + tools.
+					for (let i = validToolNames.length - 1; i >= 0; i--) {
+						const name = validToolNames[i];
+						if (!this.hasBuiltInTool(name) && !allowedDirect.has(name)) {
+							validToolNames.splice(i, 1);
+							const toolIdx = tools.findIndex(t => t.name === name);
+							if (toolIdx >= 0) tools.splice(toolIdx, 1);
+						}
+					}
+					// Remove unselected names from mountNames.
+					for (const name of mountNames) {
+						if (!allowedMounted.has(name)) mountNames.delete(name);
+					}
+				}
+			}
+		}
 		this.#enabledToolNames = new Set([...validToolNames, ...mountNames]);
 		this.#setMountedNames(mountNames);
 		this.#setActiveToolNames?.(validToolNames);
@@ -1552,16 +1587,6 @@ export class SessionTools {
 			}
 		}
 		this.#recordedDigestScan = { branch, scanned: branch.length, digest };
-		return digest;
-	}
-
-	/** Digest of the agent's current base prompt, comparable with the digests recorded on the branch. */
-	currentPromptDigest(): string {
-		const base = this.baseOfSystemPrompt(this.#host.agent.state.systemPrompt);
-		const memo = this.#currentPromptDigest;
-		if (memo?.base === base) return memo.digest;
-		const digest = systemPromptDigest(base);
-		this.#currentPromptDigest = { base, digest };
 		return digest;
 	}
 
@@ -2060,13 +2085,45 @@ export class SessionTools {
 				this.#skills = discovered.skills;
 				this.#skillWarnings = discovered.warnings;
 				this.#skillsSettings = skillsSettings;
-
 				if (this.#host.agentKind() === "main") {
 					setActiveSkills(this.#skills);
 				}
 			}
 			await this.refreshBaseSystemPrompt();
 			this.#host.notifyCommandMetadataChanged();
+		});
+	}
+	/**
+	 * Installs or clears the tool-presentation policy resolver.
+	 * Cleared on {@link session_shutdown}.
+	 */
+	async setToolPresentationPolicyResolver(resolver: ToolPresentationPolicyResolver | undefined): Promise<void> {
+		this.#toolPresentationPolicyResolver = resolver;
+		const policy = resolver ? resolver() : undefined;
+		if (policy && policy.id !== SEMANTIC_DISCOVERY_POLICY_ID) {
+			throw new Error(
+				`ToolPresentationPolicy with id "${policy.id}" is not supported; only "${SEMANTIC_DISCOVERY_POLICY_ID}" is accepted.`,
+			);
+		}
+		return this.runToolRegistryMutation(async () => {
+			this.resetAnnouncedMounts();
+			const registry = new Map(this.#toolRegistry);
+			const activeToolNames = this.getActiveToolNames();
+			const enabledToolNames = this.getEnabledToolNames();
+			const selection = resolvePresentation(
+				registry,
+				policy,
+				new Set(activeToolNames),
+				new Set(enabledToolNames),
+				name => this.hasBuiltInTool(name),
+			);
+			if (!selection) return;
+			this.#runtimeSelectedToolNames = new Set(selection.direct.filter(name => !this.#xdev?.mountedNames.has(name)));
+			this.#presentationPinnedToolNames = new Set(
+				selection.direct.filter(name => this.#xdev?.mountedNames.has(name)),
+			);
+			const xdevMountedNames = new Set(selection.mounted);
+			this.#setMountedNames(xdevMountedNames);
 		});
 	}
 

@@ -150,6 +150,7 @@ import type {
 } from "../shared-events";
 import type { SlashCommandInfo } from "../slash-commands";
 import type { TerminalLaunchRequest, TerminalLaunchResult } from "../../subprocess/terminal-launch";
+import type { ToolPresentationPolicyResolver } from "../../session/tool-presentation-policy";
 
 export type { Keybinding, OverlayHandle, OverlayOptions } from "@oh-my-pi/pi-tui";
 export type { AppKeybinding, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
@@ -2135,6 +2136,11 @@ export interface ExtensionAPI {
 	/** Set the active tools by name. */
 	setActiveTools(toolNames: string[]): Promise<void>;
 
+	/**
+	 * Install or clear a tool-presentation policy resolver.
+	 */
+	setToolPresentationPolicy(resolver: ToolPresentationPolicyResolver | undefined): Promise<void>;
+
 	/** Get available slash commands in the current session. */
 	getCommands(): SlashCommandInfo[];
 
@@ -2370,6 +2376,8 @@ export type GetCommandsHandler = () => SlashCommandInfo[];
 
 export type SetActiveToolsHandler = (toolNames: string[]) => Promise<void>;
 
+export type SetToolPresentationPolicyHandler = (resolver: ToolPresentationPolicyResolver | undefined) => Promise<void>;
+
 export type SetModelHandler = (model: Model) => Promise<boolean>;
 
 export type GetThinkingLevelHandler = () => ThinkingLevel | undefined;
@@ -2402,6 +2410,7 @@ export interface ExtensionActions {
 	getActiveTools: GetActiveToolsHandler;
 	getAllTools: GetAllToolsHandler;
 	setActiveTools: SetActiveToolsHandler;
+	setToolPresentationPolicy: SetToolPresentationPolicyHandler;
 	getCommands: GetCommandsHandler;
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
@@ -2453,6 +2462,7 @@ export interface ExtensionCommandContextActions {
 
 /** Full runtime = state + actions, including host-compatible service-tier fallbacks. */
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {
+	setToolPresentationPolicy?: SetToolPresentationPolicyHandler;
 	getServiceTiers: GetServiceTiersHandler;
 	setServiceTier: SetServiceTierHandler;
 }
