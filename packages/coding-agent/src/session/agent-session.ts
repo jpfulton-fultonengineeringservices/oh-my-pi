@@ -506,6 +506,7 @@ import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import { promptDigestOfEntry, SessionTools, type SessionToolsHost } from "./session-tools";
+import type { ToolPresentationPolicyResolver } from "./tool-presentation-policy";
 import { resolveWebsocketPreference } from "./settings-stream-fn";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
@@ -7459,6 +7460,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Selects enabled tools, ignoring names absent from the registry. */
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
 		return this.#tools.setActiveToolsByName(toolNames);
+	}
+
+	/** Installs or clears a tool-presentation policy; see {@link SessionTools.setToolPresentationPolicyResolver}. */
+	setToolPresentationPolicyResolver(resolver: ToolPresentationPolicyResolver | undefined): Promise<void> {
+		return this.#tools.setToolPresentationPolicyResolver(resolver);
 	}
 
 	/** Restores an exact top-level versus `xd://` tool partition. */
