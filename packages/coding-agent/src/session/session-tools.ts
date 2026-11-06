@@ -1656,6 +1656,15 @@ export class SessionTools {
 	}
 
 	/**
+	 * The base-prompt digest of the last primary model call, if any.
+	 * Returns `undefined` when no primary call has been made or the digest
+	 * was already consumed by {@link bindReplyToCapturedPrompt}.
+	 */
+	currentPromptDigest(): string | undefined {
+		return this.#capturedPromptDigest;
+	}
+
+	/**
 	 * Called just before a primary reply is appended to the branch: records the
 	 * digest of the prompt it was produced under when it differs from the
 	 * branch's, ahead of the reply so every path to the reply carries it.
