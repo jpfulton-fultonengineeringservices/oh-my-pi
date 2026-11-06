@@ -282,7 +282,7 @@ function systemPromptDigest(blocks: readonly string[]): string {
 }
 
 /** The digest a branch entry records, `undefined` for a malformed record, or `null` when it is not a record. */
-function promptDigestOfEntry(entry: SessionEntry): string | undefined | null {
+export function promptDigestOfEntry(entry: SessionEntry): string | undefined | null {
 	if (entry.type !== "custom" || entry.customType !== SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE) return null;
 	return typeof entry.data === "string" ? entry.data : undefined;
 }
