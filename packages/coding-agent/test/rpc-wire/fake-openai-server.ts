@@ -17,9 +17,14 @@
  * - a user message containing `read_uri <url>` → a `read` call for `<url>`
  * - a user message containing `write_uri <url>` → a `write` call storing
  *   `written by model` at `<url>` (or the JSON value after `<url>`, if supplied)
+ * - a user message containing `call_tool <name> <JSON>` → that exact direct
+ *   function call, only when it was offered in this request's `tools`
  * - anything else → text `pong`
+ *
+ * With a second argument, writes each request's offered tool names as JSONL.
  */
 import * as path from "node:path";
+import { appendFile } from "node:fs/promises";
 import { type } from "@oh-my-pi/omptype";
 
 const chatRequestSchema = type({
@@ -31,6 +36,7 @@ const chatRequestSchema = type({
 type ChatRequest = typeof chatRequestSchema.infer;
 
 type Reply = { text: string } | { tool: string; args: Record<string, unknown> };
+const offeredToolAudit = process.argv[3];
 
 function messageText(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -47,6 +53,12 @@ function scriptedReply(request: ChatRequest): Reply {
 	const offered = new Set((request.tools ?? []).map(tool => tool.function?.name));
 	const userText = last?.role === "user" ? messageText(last.content) : "";
 	const uriRequest = /\b(read|write)_uri (\S+)(?: (\{[^\n]*\}))?/.exec(userText);
+	const directToolRequest = /\bcall_tool (\S+) (\{[^\n]*\})/.exec(userText);
+	if (directToolRequest) {
+		const name = directToolRequest[1]!;
+		if (!offered.has(name)) throw new Error(`Refusing unoffered direct tool call: ${name}`);
+		return { tool: name, args: JSON.parse(directToolRequest[2]!) as Record<string, unknown> };
+	}
 	if (uriRequest?.[1] === "read") return { tool: "read", args: { path: uriRequest[2] } };
 	if (uriRequest?.[1] === "write") {
 		return { tool: "write", args: { path: uriRequest[2], content: uriRequest[3] ?? "written by model" } };
@@ -124,6 +136,12 @@ const server = Bun.serve({
 		}
 		if (!url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 });
 		const body = chatRequestSchema.assert(await request.json());
+		if (offeredToolAudit) {
+			await appendFile(
+				offeredToolAudit,
+				`${JSON.stringify({ tools: (body.tools ?? []).map(tool => tool.function?.name ?? "") })}\n`,
+			);
+		}
 		const reply = scriptedReply(body);
 		if (!body.stream) return Response.json(completionBody(reply));
 		const events = completionChunks(reply).map(chunk => `data: ${JSON.stringify(chunk)}\n\n`);

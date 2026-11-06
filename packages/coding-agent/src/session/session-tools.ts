@@ -2,8 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Agent, AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
-import type { ToolPresentationPolicyResolver } from "./tool-presentation-policy";
-import { resolvePresentation, SEMANTIC_DISCOVERY_POLICY_ID } from "./tool-presentation-policy";
 import { isRecord, logger, prompt, stringProperty, structuredCloneJSON, untilAborted } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
@@ -353,10 +351,6 @@ interface XdevMountNoticeProjection {
 export class SessionTools {
 	readonly #host: SessionToolsHost;
 	#autoApprove: boolean;
-	/**
-	 * Resolver for the current tool presentation policy.
-	 */
-	#toolPresentationPolicyResolver: ToolPresentationPolicyResolver | undefined;
 	#toolRegistry: Map<string, AgentTool>;
 	#createVibeTools: (() => AgentTool[]) | undefined;
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
@@ -1403,37 +1397,6 @@ export class SessionTools {
 		const previousMounted = new Set(this.#xdev?.mountedNames ?? []);
 		const previousActiveToolNames = this.getActiveToolNames();
 		const previousEnabledToolNames = this.#enabledToolNames;
-		// Tool-presentation policy: filter MCP/extension names.
-		if (this.#toolPresentationPolicyResolver) {
-			const livePolicy = this.#toolPresentationPolicyResolver();
-			if (livePolicy && livePolicy.id === SEMANTIC_DISCOVERY_POLICY_ID) {
-				const allEnabled = new Set([...validToolNames, ...mountNames]);
-				const policySelection = resolvePresentation(
-					this.#toolRegistry,
-					livePolicy,
-					new Set(validToolNames),
-					allEnabled,
-					name => this.hasBuiltInTool(name),
-				);
-				if (policySelection) {
-					const allowedDirect = new Set(policySelection.direct);
-					const allowedMounted = new Set(policySelection.mounted);
-					// Remove unselected MCP/extension names from validToolNames + tools.
-					for (let i = validToolNames.length - 1; i >= 0; i--) {
-						const name = validToolNames[i];
-						if (!this.hasBuiltInTool(name) && !allowedDirect.has(name)) {
-							validToolNames.splice(i, 1);
-							const toolIdx = tools.findIndex(t => t.name === name);
-							if (toolIdx >= 0) tools.splice(toolIdx, 1);
-						}
-					}
-					// Remove unselected names from mountNames.
-					for (const name of mountNames) {
-						if (!allowedMounted.has(name)) mountNames.delete(name);
-					}
-				}
-			}
-		}
 		this.#enabledToolNames = new Set([...validToolNames, ...mountNames]);
 		this.#setMountedNames(mountNames);
 		this.#setActiveToolNames?.(validToolNames);
@@ -2128,40 +2091,6 @@ export class SessionTools {
 			this.#host.notifyCommandMetadataChanged();
 		});
 	}
-	/**
-	 * Installs or clears the tool-presentation policy resolver.
-	 * Cleared on {@link session_shutdown}.
-	 */
-	async setToolPresentationPolicyResolver(resolver: ToolPresentationPolicyResolver | undefined): Promise<void> {
-		this.#toolPresentationPolicyResolver = resolver;
-		const policy = resolver ? resolver() : undefined;
-		if (policy && policy.id !== SEMANTIC_DISCOVERY_POLICY_ID) {
-			throw new Error(
-				`ToolPresentationPolicy with id "${policy.id}" is not supported; only "${SEMANTIC_DISCOVERY_POLICY_ID}" is accepted.`,
-			);
-		}
-		return this.runToolRegistryMutation(async () => {
-			this.resetAnnouncedMounts();
-			const registry = new Map(this.#toolRegistry);
-			const activeToolNames = this.getActiveToolNames();
-			const enabledToolNames = this.getEnabledToolNames();
-			const selection = resolvePresentation(
-				registry,
-				policy,
-				new Set(activeToolNames),
-				new Set(enabledToolNames),
-				name => this.hasBuiltInTool(name),
-			);
-			if (!selection) return;
-			this.#runtimeSelectedToolNames = new Set(selection.direct.filter(name => !this.#xdev?.mountedNames.has(name)));
-			this.#presentationPinnedToolNames = new Set(
-				selection.direct.filter(name => this.#xdev?.mountedNames.has(name)),
-			);
-			const xdevMountedNames = new Set(selection.mounted);
-			this.#setMountedNames(xdevMountedNames);
-		});
-	}
-
 	/** Selects enabled tools, ignoring names absent from the registry. */
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
 		return this.runToolRegistryMutation(async () => {

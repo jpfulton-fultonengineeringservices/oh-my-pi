@@ -141,6 +141,11 @@ describe("startup-deferred extensions", () => {
 
 			expect(session.getAllToolNames()).toContain("deferred_probe");
 			expect(session.getEnabledToolNames()).toContain("deferred_probe");
+			const deferred = runner.getLoadedExtensions().find(extension => extension.path === deferredPath);
+			expect(deferred?.transcriptPresenters).toEqual([]);
+			expect(runner.getRegisteredTool("deferred_probe")?.extensionPath).toBe(deferredPath);
+			expect(fs.readFileSync(logPath, "utf8")).toBe("eager\ndeferred\n");
+			await session.loadDeferredExtensions();
 			expect(fs.readFileSync(logPath, "utf8")).toBe("eager\ndeferred\n");
 			// Subagents and forks inherit the deferred source like an eager one.
 			expect(session.extensionPaths).toContain(deferredPath);
