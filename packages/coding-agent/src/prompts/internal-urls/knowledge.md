@@ -1,0 +1,1 @@
+`knowledge://record/<context>/<track>/<record-id>` and `knowledge://track/<context>/<track>`: consent-governed knowledge records from the configured memvid-kb service — bounded current-state retrieval, text only, with provenance; fuzzy/temporal/entity exploration, reflection, sharing and multimedia are not available.
