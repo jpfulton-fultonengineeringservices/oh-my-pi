@@ -236,6 +236,14 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(resource.contentType).toBe("text/markdown");
 			expect(resource.shape).toBe("document");
 			expect(resource.content).toContain("# Release gate notes");
+			// The prior names its successor ahead of its own body, so opening a superseded
+			// record cannot present corrected-away text as the answer.
+			expect(resource.content).toContain(
+				"> **Superseded by `doc-2`** — read `knowledge://record/work/notes/doc-2` for the current answer; the text below is the prior, preserved deliberately.",
+			);
+			expect(resource.content.indexOf("Superseded by")).toBeLessThan(
+				resource.content.indexOf("Outage is reported unavailable"),
+			);
 			expect(resource.content).toContain("- id: doc-1");
 			expect(resource.content).toContain("- track: notes");
 			expect(resource.content).toContain("- origin: alice");
@@ -282,6 +290,7 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(resource.content).toContain("No provenance recorded.");
 			expect(resource.content).not.toContain("- origin:");
 			expect(resource.content).not.toContain("- verified:");
+			expect(resource.content).not.toContain("Superseded by");
 			expect(resource.notes).toEqual([]);
 		});
 	});
@@ -355,6 +364,235 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(resource.content).toContain("Release gate notes");
 			expect(resource.content).toContain("Outage is reported unavailable.");
 			expect(resource.content).toContain("- doc-2 —");
+		});
+	});
+
+	it("marks corrected priors in a track listing instead of framing them as current", async () => {
+		setToken(TOKEN_VALUE);
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			stubFetch(() =>
+				Response.json({
+					track: "notes",
+					total: 2,
+					limit: 50,
+					offset: 0,
+					results: [
+						{
+							id: "doc-1",
+							uri: "mv2://notes/records/doc-1",
+							title: "Release gate notes",
+							tags: ["release"],
+							originActor: "alice",
+							capturedAt: "2026-11-01T09:00:00Z",
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: null,
+							textSnippet: "Still current.",
+						},
+						{
+							id: "doc-2",
+							uri: "mv2://notes/records/doc-2",
+							title: "Older gate notes",
+							tags: [],
+							originActor: "bob",
+							capturedAt: "2026-10-01T09:00:00Z",
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: "doc-3",
+							textSnippet: "Corrected away.",
+						},
+					],
+				}),
+			);
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://track/work/notes"),
+				{ cwd: dir },
+			);
+
+			expect(resource.isDirectory).toBe(true);
+
+			// Contrast, not pass-through: the two entries must render distinctly, and neither
+			// may carry the other's framing.
+			const blocks = resource.content.split("\n- ");
+			const current = blocks.find(block => block.startsWith("Release gate notes"));
+			const stale = blocks.find(block => block.startsWith("Older gate notes"));
+			expect(current).toBeDefined();
+			expect(stale).toBeDefined();
+			if (current === undefined || stale === undefined) {
+				throw new Error(`listing did not render both entries separately:\n${resource.content}`);
+			}
+
+			expect(stale).toContain("SUPERSEDED by doc-3");
+			expect(stale).toContain("corrected-away text");
+			expect(stale).toContain("kept for the trail");
+			expect(stale).toContain("not the current answer");
+			expect(stale).toContain("knowledge://record/work/notes/doc-2");
+			// The status lands before the body snippet, so the stale text is framed first.
+			expect(stale.indexOf("SUPERSEDED")).toBeLessThan(stale.indexOf("Corrected away."));
+
+			expect(current).toContain("knowledge://record/work/notes/doc-1");
+			expect(current).not.toContain("SUPERSEDED");
+			expect(current).not.toContain("corrected");
+			expect(current).not.toContain("trail");
+
+			expect(resource.content).toContain("1 of the 2 entries below are superseded priors");
+			// Unmarked entries are the service's silence, not proof of currency.
+			expect(resource.content).toContain("no successor recorded");
+			expect(resource.content).toContain("not a guarantee of currency");
+		});
+	});
+
+	it("says when every entry in a track has been superseded", async () => {
+		setToken(TOKEN_VALUE);
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			stubFetch(() =>
+				Response.json({
+					track: "notes",
+					total: 2,
+					limit: 50,
+					offset: 0,
+					results: [
+						{
+							id: "doc-1",
+							uri: "mv2://notes/records/doc-1",
+							title: "First claim",
+							tags: [],
+							originActor: null,
+							capturedAt: null,
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: "doc-2",
+							textSnippet: "Superseded one.",
+						},
+						{
+							id: "doc-2",
+							uri: "mv2://notes/records/doc-2",
+							title: "Second claim",
+							tags: [],
+							originActor: null,
+							capturedAt: null,
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: "doc-3",
+							textSnippet: "Superseded two.",
+						},
+					],
+				}),
+			);
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://track/work/notes"),
+				{ cwd: dir },
+			);
+
+			expect(resource.isDirectory).toBe(true);
+			expect(resource.content).toContain("this track has no current records");
+			expect(resource.content).toContain("preserved for the trail");
+			expect(resource.content.match(/SUPERSEDED by/g)).toHaveLength(2);
+			// Nothing is unmarked, so the currency caveat is not needed.
+			expect(resource.content).not.toContain("no successor recorded");
+		});
+	});
+
+	it("scopes an all-superseded page to the page when the track is larger", async () => {
+		setToken(TOKEN_VALUE);
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			stubFetch(() =>
+				Response.json({
+					track: "notes",
+					total: 60,
+					limit: 50,
+					offset: 0,
+					results: [
+						{
+							id: "doc-1",
+							uri: "mv2://notes/records/doc-1",
+							title: "First claim",
+							tags: [],
+							originActor: null,
+							capturedAt: null,
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: "doc-2",
+							textSnippet: "Superseded one.",
+						},
+						{
+							id: "doc-2",
+							uri: "mv2://notes/records/doc-2",
+							title: "Second claim",
+							tags: [],
+							originActor: null,
+							capturedAt: null,
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: "doc-3",
+							textSnippet: "Superseded two.",
+						},
+					],
+				}),
+			);
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://track/work/notes"),
+				{ cwd: dir },
+			);
+
+			expect(resource.content).toContain("2 of 60 records in track");
+			// A fully superseded page is not a track with no current records.
+			expect(resource.content).not.toContain("no current records");
+			expect(resource.content).toContain("Every entry on this page has been corrected by a later record");
+			expect(resource.content).toContain("58 further records are not shown");
+			expect(resource.content.match(/SUPERSEDED by/g)).toHaveLength(2);
+		});
+	});
+
+	it("refuses a track-level claim when the service omits the listing total", async () => {
+		setToken(TOKEN_VALUE);
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			stubFetch(() =>
+				Response.json({
+					track: "notes",
+					limit: 50,
+					offset: 0,
+					results: [
+						{
+							id: "doc-1",
+							uri: "mv2://notes/records/doc-1",
+							title: "First claim",
+							tags: [],
+							originActor: null,
+							capturedAt: null,
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: "doc-2",
+							textSnippet: "Superseded one.",
+						},
+						{
+							id: "doc-2",
+							uri: "mv2://notes/records/doc-2",
+							title: "Second claim",
+							tags: [],
+							originActor: null,
+							capturedAt: null,
+							lastVerifiedAt: null,
+							derivedFrom: null,
+							supersededBy: "doc-3",
+							textSnippet: "Superseded two.",
+						},
+					],
+				}),
+			);
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://track/work/notes"),
+				{ cwd: dir },
+			);
+
+			// `total` is contract-required; without it the page proves nothing about the track.
+			expect(resource.content).not.toContain("no current records");
+			expect(resource.content).toContain("Every entry on this page has been corrected by a later record");
+			expect(resource.content).toContain("the service reported no total, so further records may exist");
 		});
 	});
 

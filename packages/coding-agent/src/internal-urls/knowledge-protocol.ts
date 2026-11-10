@@ -247,8 +247,18 @@ function renderRecord(url: InternalUrl, target: KnowledgeTarget, payload: unknow
 	const id = readString(record.id) ?? target.recordId;
 	const track = readString(record.track) ?? target.track;
 	const title = readString(record.title);
+	const successor = readString(record.supersededBy);
 
-	const header: string[] = [`# ${title ?? id}`, "", `- id: ${id}`, `- track: ${track}`];
+	const header: string[] = [`# ${title ?? id}`, ""];
+	if (successor !== undefined) {
+		// The trail is preserved deliberately, so a prior has to say for itself that it is
+		// the superseded text instead of letting its body read as the answer.
+		header.push(
+			`> **Superseded by \`${successor}\`** — read \`knowledge://record/${target.contextName}/${track}/${successor}\` for the current answer; the text below is the prior, preserved deliberately.`,
+			"",
+		);
+	}
+	header.push(`- id: ${id}`, `- track: ${track}`);
 	const notes: string[] = [];
 	for (const field of PROVENANCE_FIELDS) {
 		const value = readString(record[field.json]);
@@ -278,24 +288,65 @@ function renderTrack(url: InternalUrl, target: KnowledgeTarget, payload: unknown
 		);
 	}
 
-	const total = typeof listing.total === "number" ? listing.total : results.length;
+	// `total` is contract-required in the listing body. When the service omits it, the page
+	// is all the reader has, so no claim about the whole track may be drawn from it.
+	const reportedTotal = typeof listing.total === "number" ? listing.total : undefined;
+	const total = reportedTotal ?? results.length;
 	const lines: string[] = [`# Track ${target.track}`, ""];
 	if (results.length === 0) {
 		lines.push(`Track "${target.track}" holds no records (total ${total}). Nothing here is an outage.`);
 	} else {
-		lines.push(`${results.length} of ${total} records in track "${target.track}":`, "");
+		const entries: string[] = [];
+		let superseded = 0;
 		for (const item of results) {
 			const entry = asObject(item);
 			const id = readString(entry?.id) ?? "(unknown id)";
 			const title = readString(entry?.title);
-			lines.push(`- ${title ?? id} — knowledge://record/${target.contextName}/${target.track}/${id}`);
+			// The service keeps corrected priors in the listing (preserved trail), so the
+			// listing itself is the only place a reader learns a prior is not the answer.
+			const successor = readString(entry?.supersededBy);
+			if (successor !== undefined) superseded += 1;
+			const status =
+				successor === undefined
+					? ""
+					: ` — SUPERSEDED by ${successor}: this is the corrected-away text, kept for the trail, not the current answer`;
+			entries.push(`- ${title ?? id} — knowledge://record/${target.contextName}/${target.track}/${id}${status}`);
 			for (const field of PROVENANCE_FIELDS) {
 				const value = readString(entry?.[field.json]);
-				if (value !== undefined) lines.push(`  - ${field.header}: ${value}`);
+				if (value !== undefined) entries.push(`  - ${field.header}: ${value}`);
 			}
 			const snippet = readString(entry?.textSnippet);
-			if (snippet !== undefined) lines.push(`  - ${oneLine(snippet)}`);
+			if (snippet !== undefined) entries.push(`  - ${oneLine(snippet)}`);
 		}
+		lines.push(`${results.length} of ${total} records in track "${target.track}":`, "");
+		if (superseded === results.length) {
+			// The route is paginated, so a fully superseded page says nothing about the track
+			// unless the page is the whole track. `>=` keeps a service that reports a total
+			// smaller than the page it returned on the track-level sentence rather than
+			// printing a negative "not shown" count.
+			const beyond =
+				reportedTotal === undefined
+					? "the service reported no total, so further records may exist"
+					: `${total - results.length} further records are not shown`;
+			lines.push(
+				reportedTotal !== undefined && results.length >= reportedTotal
+					? `Every entry below has been corrected by a later record: this track has no current records. Each entry is the superseded text, preserved for the trail — read its successor before relying on it.`
+					: `Every entry on this page has been corrected by a later record; ${beyond} — follow the successor links before treating anything here as current.`,
+				"",
+			);
+		} else if (superseded > 0) {
+			lines.push(
+				`${superseded} of the ${results.length} entries below are superseded priors, corrected by a later record and kept for the trail — not current-state answers.`,
+				"",
+			);
+		}
+		if (superseded < results.length) {
+			lines.push(
+				`An entry with no SUPERSEDED marker simply has no successor recorded. Supersede is two writes, so an interrupted call can leave a prior reading exactly that way; absence of a marker is not a guarantee of currency.`,
+				"",
+			);
+		}
+		lines.push(...entries);
 	}
 
 	return {
