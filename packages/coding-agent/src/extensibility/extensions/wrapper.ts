@@ -20,6 +20,7 @@ import {
 	requestApproval,
 	resolveApproval,
 	resolveApprovalFromContext,
+	type ResolvedApproval,
 	sessionApprovalScope,
 	truncateForPrompt,
 } from "../../tools/approval";
@@ -276,7 +277,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			context,
 		);
 		if (preResolved.policy === "deny") {
-			throw denyError(preResolved, this.tool.name);
+			return this.#refuseOrSubstitute(preResolved, toolCallId, params, context);
 		}
 
 		// 1. Emit tool_call event first - extensions can block execution or revise the input the tool
@@ -358,7 +359,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		context?.xdevTierResolved?.(resolved.tier);
 		if (resolved.policy === "deny") {
 			cancelPreflight();
-			throw denyError(resolved, this.tool.name);
+			return this.#refuseOrSubstitute(resolved, toolCallId, effectiveParams, context);
 		}
 		const pendingSafetyChecks = computerSafetyChecks(context);
 		// Outer approvals only cover the original input. `xd://` approval skips
@@ -581,5 +582,66 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			context?.addAdditionalContext?.(pendingAdditionalContext);
 		}
 		return result;
+	}
+
+	/**
+	 * Refuse a call the approval policy denied — or hand the refusal to a
+	 * `tool_result` handler that can answer it.
+	 *
+	 * A denial never runs the tool, and until now it never reached an extension
+	 * either: `tool_result` was emitted only on the post-execution path, so the
+	 * one gate that turns a policy block into a useful answer (`bash` commands
+	 * redirected to their dedicated tool) had nothing to observe. Emitting the
+	 * refusal with the very text the model would have received gives such a
+	 * handler the input, the refusal, and the chance to replace the model-visible
+	 * content.
+	 *
+	 * The security posture is unchanged: the tool is never invoked here, a handler
+	 * that stays silent reproduces the exact throw, and replacing the content of a
+	 * call that was refused anyway is the same authority a handler already holds
+	 * over a successful result or a thrown failure. `tool_call` context is
+	 * deliberately not delivered — a refusal is not a successful execution, so it
+	 * must not inject instructions.
+	 */
+	async #refuseOrSubstitute(
+		resolved: ResolvedApproval,
+		toolCallId: string,
+		params: Static<TParameters>,
+		context: AgentToolContext | undefined,
+	): Promise<AgentToolResult<TDetails, TParameters>> {
+		const refusal = denyError(resolved, this.tool.name);
+		if (!this.runner.hasHandlers("tool_result")) throw refusal;
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: refusal.message }];
+		const resultResult = await this.runner.emitToolResult(
+			{
+				type: "tool_result",
+				toolName: this.tool.name,
+				toolCallId,
+				input: normalizeToolEventInput(
+					this.tool.name,
+					resolveToolEventInput(this.tool, toolEventArgs(params, context)),
+				),
+				content,
+				details: undefined as TDetails,
+				isError: true,
+			},
+			this.#agent,
+		);
+		// Context the refusal handler itself produced is its commentary on the
+		// refusal, so it is delivered the way the post-execution path delivers it
+		// for a failed call.
+		if (resultResult?.additionalContext !== undefined) {
+			context?.addAdditionalContext?.(resultResult.additionalContext);
+		}
+		if (resultResult?.content === undefined) throw refusal;
+		// Effective error state: an explicit handler override wins, otherwise a
+		// refusal stays an error. Clearing it is how a handler that genuinely
+		// answered the call (auto-fulfilment) reports a substituted success.
+		const effectiveError = resultResult.isError ?? true;
+		return {
+			content: resultResult.content,
+			details: (resultResult.details ?? undefined) as TDetails,
+			...(effectiveError ? { isError: true } : {}),
+		};
 	}
 }

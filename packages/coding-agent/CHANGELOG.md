@@ -11,6 +11,8 @@
 - `grep -e` and `rg -e` in the bash tool accept patterns that start with `-` (e.g. `grep -e "--canary"`) instead of failing with an unknown-option error.
 - The bash execution visualization keeps updating, and saved traces still restore, after a command handles bytes that aren't valid UTF-8 (e.g. `v=$(printf '\377')`)
 - On Windows, `grep`, `glob` and isolated subagents no longer flash a console window when they query or start the ovnfs daemon.
+- `bash.gitGuard` treats a checkout under a `.git-worktrees/` directory as a private checkout, so path `checkout`, `switch`, `reset --hard` and `stash` run there — including in a git submodule nested in one — after saving discarded uncommitted changes to `refs/omp/discarded`.
+- A tool call refused by approval policy is now observable to extensions: the tool wrapper emits it as an error `tool_result` carrying the tool input and the refusal text the model would have received, so a `tool_result` handler may substitute the model-visible content (the `bash` → dedicated-tool redirect is the intended user). A denied call still never executes, and when no extension listens — or a listener stays silent — the refusal throws exactly as before.
 
 ## [18.17.0] - 2026-11-06
 
