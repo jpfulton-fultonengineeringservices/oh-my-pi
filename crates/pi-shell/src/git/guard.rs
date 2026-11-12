@@ -185,19 +185,33 @@ impl Place {
 }
 
 /// Whether `repo`'s checkout belongs to one line of work: an ovnfs checkout, a
-/// worktree linked to a repository that has a main checkout of its own, or a
-/// submodule inside either. Other checkouts may be shared, including every
-/// worktree of a bare repository, where one of them is where a person works.
+/// worktree under a `.git-worktrees/` directory (the convention the agent's
+/// worktree tools create), a worktree linked to a repository that has a main
+/// checkout of its own, or a submodule inside either. The convention is decided
+/// before anything else, so it wins even for a bare repository — which has no
+/// working tree of its own for a person to be working in.
+///
+/// Other checkouts may be shared, including a bare repository's worktrees
+/// created anywhere else, where one of them is commonly where a person works.
 fn is_private(repo: &GitRepo) -> bool {
 	if repo.config_has_local("ovnfs.checkout").unwrap_or(false) {
 		return true;
 	}
 	let info = repo.info();
 	if repo.is_linked_worktree() {
-		return info
-			.common_dir
-			.file_name()
-			.is_some_and(|name| name == ".git");
+		// A worktree under `.git-worktrees/` is one agent's whatever its
+		// common dir is called; a submodule's worktrees hang off
+		// `…/.git/modules/<name>`, so the common dir alone says nothing.
+		let conventional = info.repo_root.parent().is_some_and(|parent| {
+			parent
+				.file_name()
+				.is_some_and(|name| name == ".git-worktrees")
+		});
+		return conventional
+			|| info
+				.common_dir
+				.file_name()
+				.is_some_and(|name| name == ".git");
 	}
 	// A submodule's `.git` is a file pointing into its superproject's.
 	info.git_entry_path.is_file()
@@ -1606,8 +1620,78 @@ mod tests {
 		);
 	}
 
-	/// Every worktree of a bare repository is linked, and one of them is where
-	/// a person works: none counts as one agent's.
+	/// The fixture with a `lib` submodule cloned in and committed: a worktree of
+	/// that submodule hangs off the superproject's `…/.git/modules/lib`, so its
+	/// common dir is named `lib` and never `.git`.
+	#[cfg(unix)]
+	fn submodule_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+		let (temp, repo) = fixture();
+		let parent = repo.parent().expect("fixture parent").to_owned();
+		let library = parent.join("library");
+		git(&parent, &["clone", "-q", &repo.to_string_lossy(), "library"]);
+		let file = ["-c", "protocol.file.allow=always"];
+		git(
+			&repo,
+			&[&file[..], &["submodule", "add", "-q", &library.to_string_lossy(), "lib"]].concat(),
+		);
+		git(&repo, &["commit", "-qm", "lib"]);
+		let lib = repo.join("lib");
+		(temp, repo, lib)
+	}
+
+	/// The identity a discarded-changes save needs, since a submodule's config
+	/// is the clone's own and carries none of the fixture's.
+	#[cfg(unix)]
+	fn identify(checkout: &Path) {
+		git(checkout, &["config", "user.name", "t"]);
+		git(checkout, &["config", "user.email", "t@t"]);
+		git(checkout, &["config", "commit.gpgSign", "false"]);
+	}
+
+	/// A submodule's worktree under `.git-worktrees/` is one agent's even
+	/// though its common dir is `…/modules/lib`: what it discards is saved and
+	/// it runs.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_submodule_worktree_under_git_worktrees_is_private() {
+		let (_temp, _repo, lib) = submodule_fixture();
+		let worktree = lib.join(".git-worktrees/t");
+		git(&lib, &["worktree", "add", "-q", ".git-worktrees/t", "-b", "topic", "HEAD"]);
+		identify(&worktree);
+
+		std::fs::write(worktree.join("tracked.txt"), "mine\n").expect("edit");
+		let (code, output) = guarded(&worktree, "git checkout -q -- tracked.txt").await;
+		assert_eq!(code, Some(0), "{output}");
+		assert!(output.contains("saved your uncommitted changes as"), "{output}");
+		assert_eq!(read(&worktree), "tracked\n");
+
+		std::fs::write(worktree.join("tracked.txt"), "mine\n").expect("edit again");
+		let (code, output) = guarded(&worktree, "git reset -q --hard").await;
+		assert_eq!(code, Some(0), "{output}");
+		assert!(output.contains("saved your uncommitted changes as"), "{output}");
+		assert_eq!(read(&worktree), "tracked\n");
+	}
+
+	/// The path convention is the whole test: a submodule's worktree created
+	/// anywhere else stays as shared as the submodule checkout itself.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_submodule_worktree_outside_git_worktrees_stays_guarded() {
+		let (_temp, repo, lib) = submodule_fixture();
+		let worktree = repo.parent().expect("fixture parent").join("wt");
+		git(&lib, &["worktree", "add", "-q", &worktree.to_string_lossy(), "-b", "other", "HEAD"]);
+		identify(&worktree);
+
+		std::fs::write(worktree.join("tracked.txt"), "mine\n").expect("edit");
+		let (code, output) = guarded(&worktree, "git reset -q --hard").await;
+		assert_eq!(code, Some(i32::from(REFUSED_EXIT)), "{output}");
+		assert!(output.contains("not a private checkout"), "{output}");
+		assert_eq!(read(&worktree), "mine\n");
+	}
+
+	/// A bare repository's worktrees are all linked, and one of them is commonly
+	/// where a person works: created outside the convention, none is one
+	/// agent's.
 	#[cfg(unix)]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn worktrees_of_a_bare_repository_stay_guarded() {
@@ -1630,6 +1714,29 @@ mod tests {
 		);
 		assert!(!output.contains("git worktree add"), "{output}");
 		assert_eq!(read(&worktree), "mine\n");
+	}
+
+	/// The differential for the test above: what makes a bare repository's
+	/// worktree one agent's is the `.git-worktrees/` convention, not the
+	/// shape of its repository. A bare repository has no working tree of its
+	/// own, so there is no person's checkout beside it to protect, and the
+	/// save the guard performs has nowhere to come from but this worktree.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_bare_repository_worktree_under_git_worktrees_is_private() {
+		let (_temp, repo) = fixture();
+		let parent = repo.parent().expect("fixture parent").to_owned();
+		let bare = parent.join("bare.git");
+		git(&parent, &["clone", "-q", "--bare", &repo.to_string_lossy(), "bare.git"]);
+		let worktree = bare.join(".git-worktrees/main");
+		git(&bare, &["worktree", "add", "-q", &worktree.to_string_lossy(), "main"]);
+		identify(&worktree);
+
+		std::fs::write(worktree.join("tracked.txt"), "mine\n").expect("edit");
+		let (code, output) = guarded(&worktree, "git reset -q --hard").await;
+		assert_eq!(code, Some(0), "{output}");
+		assert!(output.contains("saved your uncommitted changes as"), "{output}");
+		assert_eq!(read(&worktree), "tracked\n");
 	}
 
 	/// Mid-merge a path restore runs without a save only when git cannot
