@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import {
+	ExtensionRuntime,
+	ExtensionRuntimeNotInitializedError,
+	loadExtensionFromFactory,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import type { Extension, ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -88,6 +92,20 @@ afterEach(() => {
 });
 
 describe("extension shortcuts", () => {
+	it("throws when querying shortcut conflicts before runtime initialization", async () => {
+		const runtime = new ExtensionRuntime();
+		expect(() => runtime.getShortcutConflict()).toThrow(ExtensionRuntimeNotInitializedError);
+		await loadExtensionFromFactory(
+			pi => {
+				expect(() => pi.getShortcutConflict("ctrl+alt+x")).toThrow(ExtensionRuntimeNotInitializedError);
+			},
+			process.cwd(),
+			new EventBus(),
+			runtime,
+			"uninitialized-shortcuts",
+		);
+	});
+
 	it("reports the first holder of a chord in any spelling, matching what gets bound", async () => {
 		const {
 			runner,

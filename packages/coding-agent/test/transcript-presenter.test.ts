@@ -10,6 +10,7 @@ import type {
 	ExtensionFactory,
 	TranscriptBlock,
 	TranscriptPresentation,
+	TranscriptPresenter,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { generateRoomKey, importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
@@ -25,6 +26,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { onTranscriptPresentersChanged } from "@oh-my-pi/pi-tui/chat/transcript-presentation";
 import { minFrameIntervalMs, setMaxFps } from "@oh-my-pi/pi-tui/frame-rate";
 import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
@@ -649,6 +651,37 @@ describe("extension transcript presenters", () => {
 		dispose!();
 		expect(chat()).not.toContain("ROW-call1");
 		expect(chat()).toContain("OUTPUT-call1");
+	});
+
+	it("rejects invalid presenters and notifies once per registration and disposal", async () => {
+		const changed = vi.fn();
+		const unsubscribe = onTranscriptPresentersChanged(changed);
+		const first: TranscriptPresenter = () => undefined;
+		const second: TranscriptPresenter = () => "hidden";
+		let disposeFirst: (() => void) | undefined;
+		let disposeSecond: (() => void) | undefined;
+		try {
+			const { extensions } = await installExtensions(pi => {
+				expect(() => pi.registerTranscriptPresenter(null as unknown as TranscriptPresenter)).toThrow(
+					"registerTranscriptPresenter expects a function, got object (extension /ext/0.ts)",
+				);
+				expect(changed).not.toHaveBeenCalled();
+				disposeFirst = pi.registerTranscriptPresenter(first);
+				disposeSecond = pi.registerTranscriptPresenter(second);
+			});
+			expect(extensions[0]!.transcriptPresenters).toEqual([first, second]);
+			expect(changed).toHaveBeenCalledTimes(2);
+			disposeFirst!();
+			expect(extensions[0]!.transcriptPresenters).toEqual([second]);
+			expect(changed).toHaveBeenCalledTimes(3);
+			disposeFirst!();
+			expect(changed).toHaveBeenCalledTimes(3);
+			disposeSecond!();
+			expect(extensions[0]!.transcriptPresenters).toEqual([]);
+			expect(changed).toHaveBeenCalledTimes(4);
+		} finally {
+			unsubscribe();
+		}
 	});
 
 	it("installs the presenter of an extension bound after startup", async () => {
