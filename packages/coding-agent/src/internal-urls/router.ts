@@ -24,6 +24,7 @@ import { CfgProtocolHandler } from "./cfg-protocol";
 import { ConflictProtocolHandler } from "./conflict-protocol";
 import { HistoryProtocolHandler } from "./history-protocol";
 import { IssueProtocolHandler, PrProtocolHandler } from "./issue-pr-protocol";
+import { KnowledgeProtocolHandler } from "./knowledge-protocol";
 import { LocalProtocolHandler } from "./local-protocol";
 import { McpProtocolHandler } from "./mcp-protocol";
 import { MemoryProtocolHandler } from "./memory-protocol";
@@ -111,6 +112,7 @@ export class InternalUrlRouter {
 		this.register(new SkillProtocolHandler());
 		this.register(new RuleProtocolHandler());
 		this.register(new MemoryProtocolHandler());
+		this.register(new KnowledgeProtocolHandler());
 		this.register(new OutProtocolHandler());
 		this.register(new AgentProtocolHandler());
 		this.register(new HistoryProtocolHandler());
