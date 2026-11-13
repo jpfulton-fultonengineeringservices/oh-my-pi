@@ -24,7 +24,7 @@ function usageEstimate(): Usage {
 	};
 }
 
-describe("applyProviderReportedCost (OpenRouter BYOK)", () => {
+describe("applyProviderReportedCost", () => {
 	it("prices BYOK turns at cost_details.upstream_inference_cost, not $0", () => {
 		const usage = usageEstimate();
 		applyProviderReportedCost(openRouterModel, usage, {
@@ -82,13 +82,26 @@ describe("applyProviderReportedCost (OpenRouter BYOK)", () => {
 		expect(usage.cost.input).toBe(0.5);
 	});
 
-	it("leaves non-gateway providers untouched", () => {
+	it("engages BYOK fold provider-independently when is_byok is echoed", () => {
 		const usage = usageEstimate();
 		applyProviderReportedCost(openAiModel, usage, {
 			cost: 0,
 			is_byok: true,
 			cost_details: { upstream_inference_cost: 0.5 },
 		});
+		expect(usage.cost.total).toBe(0.5);
+	});
+
+	it("honors any transport that echoes a finite cost, not just the historical whitelist", () => {
+		const litellmModel: Pick<Model, "provider"> = { provider: "litellm" };
+		const usage = usageEstimate();
+		applyProviderReportedCost(litellmModel, usage, { cost: 0.125 });
+		expect(usage.cost.total).toBe(0.125);
+	});
+
+	it("leaves usage untouched when the echo carries no charge", () => {
+		const usage = usageEstimate();
+		applyProviderReportedCost(openAiModel, usage, {});
 		expect(usage.cost.total).toBe(0.122141);
 	});
 });

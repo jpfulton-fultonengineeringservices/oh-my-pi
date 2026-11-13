@@ -455,18 +455,15 @@ export function applyOpenAIResponsesServiceTierCost(
 
 /**
  * Reconcile token-price estimates with a gateway's authoritative account charge.
- * BYOK turns (`is_byok: true`) price from the provider spend in
- * `cost_details.upstream_inference_cost` plus whatever credits charge
- * OpenRouter reports in `cost` (its BYOK fee is plan-dependent and can be $0),
- * so both are covered.
+ * Admits any provider id when `rawUsage` carries a numeric, finite,
+ * non-negative `cost`, mirroring the honesty OpenRouter/ClinePass have
+ * historically implied; the BYOK branch additionally folds
+ * `cost_details.upstream_inference_cost` when present (OpenRouter's BYOK fee
+ * is plan-dependent and can be $0, verified live 2026-10-02).
  */
 export function applyProviderReportedCost(model: Pick<Model, "provider">, usage: Usage, rawUsage: unknown): void {
-	if (
-		(model.provider !== "openrouter" && model.provider !== "cline-pass") ||
-		typeof rawUsage !== "object" ||
-		rawUsage === null
-	)
-		return;
+	void model; // signature kept stable for both call sites; no longer branched on
+	if (typeof rawUsage !== "object" || rawUsage === null) return;
 	let reportedCost = Reflect.get(rawUsage, "cost");
 	// BYOK turns run on the account's own provider key: `cost` carries only the
 	// credits charge OpenRouter bills the turn (its BYOK fee, plan-dependent and
