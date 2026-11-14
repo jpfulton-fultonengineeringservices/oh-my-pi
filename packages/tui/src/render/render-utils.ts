@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Ellipsis } from "@oh-my-pi/pi-natives";
 import { expandWindowsLongPath, getWindowsShortPath } from "@oh-my-pi/pi-natives/path";
-import { pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
+import { oneLine, pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatKeyHint, type KeyId } from "../app-keybindings";
 import { getKeybindings } from "../keybindings";
 import type { Theme, ThemeColor } from "../theme/theme";
@@ -237,7 +237,7 @@ export function getPreviewLines(text: string, maxLines: number, maxLineLen: numb
 
 /** Collapse a possibly multi-line string into one line; whitespace runs (tabs included) become one space. */
 export function flattenLine(text: string): string {
-	return text.replace(/\s+/g, " ").trim();
+	return oneLine(text);
 }
 
 /**
