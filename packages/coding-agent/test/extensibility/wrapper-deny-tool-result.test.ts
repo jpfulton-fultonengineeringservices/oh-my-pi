@@ -7,6 +7,7 @@
  * the wrapper surfaces a resolved deny as an error `tool_result`, honours a
  * handler's substituted content, and still never executes the denied tool.
  */
+import type { Mock } from "bun:test";
 import { describe, expect, it, spyOn, vi } from "bun:test";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -53,17 +54,15 @@ interface DenyHarnessOptions {
 
 interface DenyHarness {
 	events: ToolResultEvent[];
-	additionalContext: string[];
-	cancelToolCallPreflight: ReturnType<typeof vi.fn>;
-	emitToolResult: ReturnType<typeof vi.fn>;
+	cancelToolCallPreflight: Mock<ExtensionRunner["cancelToolCallPreflight"]>;
+	emitToolResult: Mock<ExtensionRunner["emitToolResult"]>;
 	wrapper: ExtensionToolWrapper;
-	executeSpy: ReturnType<typeof spyOn>;
+	executeSpy: Mock<BashTool["execute"]>;
 	run: (command: string, context?: AgentToolContext) => Promise<{ content: { text?: string }[]; isError?: boolean }>;
 }
 
 function makeHarness(options: DenyHarnessOptions = {}): DenyHarness {
 	const events: ToolResultEvent[] = [];
-	const additionalContext: string[] = [];
 	const listenToResult = options.listenToResult ?? true;
 	const tool = makeBashTool();
 	const executeSpy = spyOn(tool, "execute");
@@ -98,7 +97,6 @@ function makeHarness(options: DenyHarnessOptions = {}): DenyHarness {
 	const wrapper = new ExtensionToolWrapper(tool as Tool, runner);
 	return {
 		events,
-		additionalContext,
 		cancelToolCallPreflight,
 		emitToolResult,
 		wrapper,
@@ -206,8 +204,7 @@ describe("ExtensionToolWrapper: a policy deny is observable", () => {
 
 	it("withholds tool_call context from a denial but delivers the refusal handler's own", async () => {
 		const context = yoloContext();
-		const addAdditionalContext = (context as unknown as { addAdditionalContext: ReturnType<typeof vi.fn> })
-			.addAdditionalContext;
+		const addAdditionalContext = context.addAdditionalContext as Mock<(context: string) => void>;
 		const harness = makeHarness({
 			rewriteTo: BLOCKED_COMMAND,
 			callContext: "instructions from a call that never ran",

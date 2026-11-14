@@ -1,10 +1,19 @@
 import knowledgeDoc from "../prompts/internal-urls/knowledge.md" with { type: "text" };
+import { asRecord, sanitizeText, stringProperty } from "@oh-my-pi/pi-utils";
+import {
+	replaceTabs,
+	sanitizeDisplayLines,
+	sanitizeDisplayWarning,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { withTimeoutSignal } from "../utils/fetch-timeout";
 import { loadMemvidkb, loadMemvidkbConfig } from "./knowledge-config";
-import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, SchemeSpec } from "./types";
+import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, SchemeHost, SchemeSpec } from "./types";
 
 /** A knowledge read is one small GET; a wedged service must not wedge the read tool. */
 const KNOWLEDGE_TIMEOUT_MS = 10_000;
-/** Bound on how much of a service error body is echoed back into the transcript. */
+/** Bound on how much of a service error body is read at all; rendering clips to {@link TRUNCATE_LENGTHS}. */
 const MAX_SERVICE_DETAIL_CHARS = 500;
 
 /** Provenance carried on a record, in display order: service field, header label, note key. */
@@ -90,7 +99,7 @@ export class KnowledgeProtocolHandler implements ProtocolHandler {
 			response = await fetch(endpoint, {
 				method: "GET",
 				headers: { accept: "application/json", authorization: `Bearer ${token}` },
-				signal: knowledgeSignal(context?.signal),
+				signal: withTimeoutSignal(KNOWLEDGE_TIMEOUT_MS, context?.signal),
 			});
 		} catch (error) {
 			if (context?.signal?.aborted) throw new Error("aborted");
@@ -125,9 +134,16 @@ export class KnowledgeProtocolHandler implements ProtocolHandler {
 		return target.kind === "record" ? renderRecord(url, target, payload) : renderTrack(url, target, payload);
 	}
 
-	/** Advertised only when this workspace has a usable `.memvidkb` and its bearer is set. */
-	promptDoc(): string | undefined {
-		const loaded = loadMemvidkb();
+	/**
+	 * Advertised only when this workspace has a usable `.memvidkb` and its bearer is set.
+	 * `workspace` pins the directory the upward search starts from, so a caller that knows
+	 * the session's working directory can ask about it without the process changing cwd.
+	 * It is a caller-supplied parameter only because the upstream {@link SchemeHost} carries
+	 * no working directory; once it does, `host.cwd` replaces it and the process-wide default
+	 * disappears, so the advertisement honours the same cwd as {@link resolve}.
+	 */
+	promptDoc(_host?: SchemeHost, workspace: string = process.cwd()): string | undefined {
+		const loaded = loadMemvidkb(workspace);
 		return "ok" in loaded ? knowledgeDoc.trim() : undefined;
 	}
 }
@@ -165,11 +181,6 @@ function knowledgeEndpoint(baseUrl: string, target: KnowledgeTarget): string {
 	const track = encodeURIComponent(target.track);
 	if (target.kind === "track") return `${origin}/memories/${track}/records`;
 	return `${origin}/memories/${track}/records/${encodeURIComponent(target.recordId)}`;
-}
-
-function knowledgeSignal(signal: AbortSignal | undefined): AbortSignal {
-	const timeout = AbortSignal.timeout(KNOWLEDGE_TIMEOUT_MS);
-	return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 /** Never zero results for an outage: every failure path carries an explanation and a code. */
@@ -217,7 +228,9 @@ async function serviceDetail(response: Response): Promise<string> {
 	}
 	const clipped = body.slice(0, MAX_SERVICE_DETAIL_CHARS);
 	const message = serviceErrorMessage(clipped);
-	return oneLine(message ?? clipped).slice(0, MAX_SERVICE_DETAIL_CHARS);
+	// One central composition for a single-line display string: control-strip, tabs expanded,
+	// newlines collapsed, embedded home paths shortened, then bounded to TRUNCATE_LENGTHS.LONG.
+	return truncateToWidth(sanitizeDisplayWarning(message ?? clipped), TRUNCATE_LENGTHS.LONG);
 }
 
 function serviceErrorMessage(body: string): string | undefined {
@@ -234,9 +247,9 @@ function serviceErrorMessage(body: string): string | undefined {
 }
 
 function renderRecord(url: InternalUrl, target: KnowledgeTarget, payload: unknown): InternalResource {
-	const record = asObject(payload);
-	const text = record ? readString(record.text) : undefined;
-	if (!record || text === undefined) {
+	const record = asRecord(payload);
+	const text = record ? stringProperty(record, "text") : undefined;
+	if (!record || !text) {
 		return refusal(
 			url,
 			"Knowledge service returned a record body without text; no content is available. This is an outage, not an empty result set.",
@@ -244,10 +257,10 @@ function renderRecord(url: InternalUrl, target: KnowledgeTarget, payload: unknow
 		);
 	}
 
-	const id = readString(record.id) ?? target.recordId;
-	const track = readString(record.track) ?? target.track;
-	const title = readString(record.title);
-	const successor = readString(record.supersededBy);
+	const id = renderedProperty(record, "id") ?? target.recordId;
+	const track = renderedProperty(record, "track") ?? target.track;
+	const title = renderedProperty(record, "title");
+	const successor = renderedProperty(record, "supersededBy");
 
 	const header: string[] = [`# ${title ?? id}`, ""];
 	if (successor !== undefined) {
@@ -261,16 +274,16 @@ function renderRecord(url: InternalUrl, target: KnowledgeTarget, payload: unknow
 	header.push(`- id: ${id}`, `- track: ${track}`);
 	const notes: string[] = [];
 	for (const field of PROVENANCE_FIELDS) {
-		const value = readString(record[field.json]);
-		if (value === undefined) continue;
-		header.push(`- ${field.header}: ${value}`);
+		const value = stringProperty(record, field.json);
+		if (!value) continue;
+		header.push(`- ${field.header}: ${renderedLine(value)}`);
 		notes.push(`${field.note}=${value}`);
 	}
 	header.push("");
 
 	return {
 		url: url.href,
-		content: `${header.join("\n")}\n${text}`,
+		content: `${header.join("\n")}\n${sanitizeDisplayLines(text).join("\n")}`,
 		contentType: "text/markdown",
 		shape: "document",
 		notes,
@@ -278,7 +291,7 @@ function renderRecord(url: InternalUrl, target: KnowledgeTarget, payload: unknow
 }
 
 function renderTrack(url: InternalUrl, target: KnowledgeTarget, payload: unknown): InternalResource {
-	const listing = asObject(payload);
+	const listing = asRecord(payload);
 	const results = Array.isArray(listing?.results) ? listing.results : undefined;
 	if (!listing || !results) {
 		return refusal(
@@ -299,12 +312,12 @@ function renderTrack(url: InternalUrl, target: KnowledgeTarget, payload: unknown
 		const entries: string[] = [];
 		let superseded = 0;
 		for (const item of results) {
-			const entry = asObject(item);
-			const id = readString(entry?.id) ?? "(unknown id)";
-			const title = readString(entry?.title);
+			const entry = asRecord(item);
+			const id = renderedProperty(entry, "id") ?? "(unknown id)";
+			const title = renderedProperty(entry, "title");
 			// The service keeps corrected priors in the listing (preserved trail), so the
 			// listing itself is the only place a reader learns a prior is not the answer.
-			const successor = readString(entry?.supersededBy);
+			const successor = renderedProperty(entry, "supersededBy");
 			if (successor !== undefined) superseded += 1;
 			const status =
 				successor === undefined
@@ -312,11 +325,11 @@ function renderTrack(url: InternalUrl, target: KnowledgeTarget, payload: unknown
 					: ` — SUPERSEDED by ${successor}: this is the corrected-away text, kept for the trail, not the current answer`;
 			entries.push(`- ${title ?? id} — knowledge://record/${target.contextName}/${target.track}/${id}${status}`);
 			for (const field of PROVENANCE_FIELDS) {
-				const value = readString(entry?.[field.json]);
+				const value = renderedProperty(entry, field.json);
 				if (value !== undefined) entries.push(`  - ${field.header}: ${value}`);
 			}
-			const snippet = readString(entry?.textSnippet);
-			if (snippet !== undefined) entries.push(`  - ${oneLine(snippet)}`);
+			const snippet = renderedProperty(entry, "textSnippet");
+			if (snippet !== undefined) entries.push(`  - ${snippet}`);
 		}
 		lines.push(`${results.length} of ${total} records in track "${target.track}":`, "");
 		if (superseded === results.length) {
@@ -358,16 +371,19 @@ function renderTrack(url: InternalUrl, target: KnowledgeTarget, payload: unknown
 	};
 }
 
-function asObject(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
+/** Service text as it is safe to put on one rendered markdown line: control-stripped, tabs expanded, whitespace collapsed. */
+function renderedLine(value: string): string {
+	return oneLine(replaceTabs(sanitizeText(value)));
 }
 
-function readString(value: unknown): string | undefined {
-	return typeof value === "string" && value.length > 0 ? value : undefined;
+/** A service string property rendered for markdown, or `undefined` when absent or blank. */
+function renderedProperty(object: Record<string, unknown> | null, key: string): string | undefined {
+	const value = object ? stringProperty(object, key) : undefined;
+	return value ? renderedLine(value) : undefined;
 }
 
+// Phase-3 dependency: local copy until `@oh-my-pi/pi-utils` exports `oneLine` (the
+// central-helpers branch is adding it); this call site then imports the central helper.
 function oneLine(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
 }
