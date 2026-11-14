@@ -10,8 +10,10 @@ export interface BoundedSetOptions {
  * A `Set<string>` with a capacity, oldest-inserted eviction, and a {@link BoundedSet.rebind}
  * that re-places the whole set around one member.
  *
- * Between {@link LRUCache} and {@link RingBuffer}: neither fits a membership index
- * that is consulted by `has` only. Recency is deliberately not tracked — reading a
+ * Between `LRUCache` (`@oh-my-pi/pi-utils/lru`) and `RingBuffer`
+ * (`@oh-my-pi/pi-utils/ring`) — both reachable only by subpath — yet neither fits a
+ * membership index that is consulted by `has` only. Recency is deliberately not
+ * tracked — reading a
  * member never refreshes its position, so eviction order is insertion order and a
  * caller can reason about which id is dropped next. Iterate it with
  * `[Symbol.iterator]`; members come back oldest first.

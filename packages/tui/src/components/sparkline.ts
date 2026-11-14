@@ -29,6 +29,10 @@ export interface SparklineOptions {
 	 * bucket's cells. A bucket's total is the sum of its column and is what `min`
 	 * and `max` scale, exactly as a plain value is scaled; `values` is then unused,
 	 * so pass `[]`. A bucket whose total is not positive draws `gap`.
+	 *
+	 * The bucket count is the longest row: the renderer draws what the caller
+	 * passes, so right-aligning a short window to a fixed width and dropping the
+	 * oldest buckets when the rows run long stay the caller's responsibility.
 	 */
 	readonly series?: readonly SparklineSeries[];
 	/** Stacked mode: cells each bucket occupies, floored at 1. Default 1. */

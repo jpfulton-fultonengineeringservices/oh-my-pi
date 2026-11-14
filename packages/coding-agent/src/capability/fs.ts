@@ -100,6 +100,10 @@ export async function walkUp(
  * directory cache, so a directory read by either is read once. Use it from a
  * synchronous call path (config discovery at module load); everything else should
  * await {@link walkUp}.
+ *
+ * As in {@link walkUp}, entries are classified from `readdir` without following
+ * them, so a symlinked file or directory matches neither kind and the walk keeps
+ * climbing past it.
  */
 export function walkUpSync(
 	startDir: string,
