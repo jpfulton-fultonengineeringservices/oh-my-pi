@@ -16,6 +16,8 @@ export * from "./conflict-protocol";
 export * from "./context";
 export * from "./history-protocol";
 export * from "./issue-pr-protocol";
+export * from "./knowledge-config";
+export * from "./knowledge-protocol";
 export * from "./local-protocol";
 export * from "./mcp-protocol";
 export * from "./memory-protocol";

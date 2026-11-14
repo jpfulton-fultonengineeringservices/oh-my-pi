@@ -528,7 +528,8 @@
 		"gen:bundle": "bun scripts/bundle-dist.ts",
 		"gen:rpc": "bun scripts/gen-rpc/index.ts",
 		"prepack": "bun run gen:export-viewer && bun run gen:bundle",
-		"bench:guard": "bun scripts/bench-guard.ts"
+		"bench:guard": "bun scripts/bench-guard.ts",
+		"test:native-extension-smoke": "bun test/rpc-wire/native-extension-smoke.ts"
 	},
 	"dependencies": {
 		"@babel/parser": "catalog:",
