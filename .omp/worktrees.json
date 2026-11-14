@@ -1,0 +1,18 @@
+{
+  "name": "ts",
+  "commands": [
+    { "cmd": "bun", "args": ["run", "check:ts"], "timeoutMs": 1800000, "provenance": "node" },
+    { "cmd": "bun", "args": ["run", "ci:test:smoke"], "timeoutMs": 900000, "provenance": "node" },
+    { "cmd": "bun", "args": ["run", "gen:bundle"], "timeoutMs": 900000, "provenance": "node" },
+    { "cmd": "bun", "args": ["run", "test:ts"], "timeoutMs": 1800000, "provenance": "node" }
+  ],
+  "env": {},
+  "nodeModules": "symlink-if-lock-matches",
+  "notes": [
+    "check:ts = oxlint + oxfmt --check + per-package tsc; test:ts = ci-test-ts local-ts; ci:test:smoke = CLI --version/--help/stats --help/--smoke-test; gen:bundle = bun --cwd=packages/coding-agent run gen:bundle.",
+    "gen:bundle is the only arm that catches a missing barrel export; keep it.",
+    "Order is deliberate: the battery stops at the first failing command, so the three deterministic arms run before test:ts. test:ts is KNOWN-RED at both bases (~22 failing tests, 20 common to baseline-upstream and baseline-fork, the remainder browser/timing flakes under 28-way parallelism) and also red in the primary checkout, so it is judged by non-regression against the recorded baseline set, never by green.",
+    "build:native must have run in the primary checkout first; each worktree also needs packages/natives/native/pi_natives.darwin-arm64.node symlinked from the primary, because the loader resolves the addon relative to its own directory and the .node is gitignored.",
+    "nodeModules stays symlink-if-lock-matches because pi_natives.darwin-arm64.node is a gitignored, primary-only build output. Consequence: workspace self-imports resolve into the primary, so each worktree needs the packages/node_modules/@oh-my-pi overlay (see farm notes) or the battery tests the wrong sources."
+  ]
+}
