@@ -32,8 +32,18 @@ interface RunningRpc {
 	stderr: () => string;
 }
 
-const binary = process.argv[2] ? path.resolve(process.argv[2]) : "";
-const config = process.argv[3] ? path.resolve(process.argv[3]) : getAgentDir();
+/** argv wins, then the environment, then the default; nothing is guessed silently. */
+function resolveInput(argument: string | undefined, environment: string | undefined, fallback: string): string {
+	return argument ? path.resolve(argument) : environment ? path.resolve(environment) : fallback;
+}
+
+const binary = resolveInput(process.argv[2], process.env.OMP_SMOKE_BINARY, "");
+const config = resolveInput(process.argv[3], process.env.OMP_CONFIG_CHECKOUT, getAgentDir());
+const configSource = process.argv[3]
+	? "argv"
+	: process.env.OMP_CONFIG_CHECKOUT
+		? "OMP_CONFIG_CHECKOUT"
+		: "getAgentDir()";
 for (const [kind, file] of [
 	["binary", binary],
 	["config checkout", config],
@@ -42,6 +52,9 @@ for (const [kind, file] of [
 	if (!path.isAbsolute(file) || !(await fs.stat(file).catch(() => undefined)))
 		throw new Error(`Missing or non-absolute ${kind}: ${file}`);
 }
+// Record what was measured, so a verdict can never be quoted without its provenance.
+console.log(`binary: ${binary === "" ? "CLI from source (packages/coding-agent/src/cli.ts)" : binary}`);
+console.log(`config checkout: ${config} (from ${configSource})`);
 /** With no explicit binary, the proof runs against the tree under test: the CLI from source. */
 const agentCommand: string[] = binary
 	? [binary]
@@ -53,6 +66,13 @@ const args = ["--model", "fake/fake-model", "--no-skills", "--no-rules", "--no-l
 
 function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
+}
+
+/** Defects outside this repository are recorded, not thrown, so every later phase still runs. */
+const recordedDefects: string[] = [];
+function recordDefect(condition: unknown, message: string): void {
+	// The RPC phases run twice (fresh session, then resume), so the same defect is recorded once.
+	if (!condition && !recordedDefects.includes(message)) recordedDefects.push(message);
 }
 
 async function waitUntil(
@@ -206,8 +226,9 @@ function modelService(): { server: Server<undefined>; failedRequests(): number }
 async function launch(state: Fixture, resume?: string): Promise<RunningRpc> {
 	let _child: ptree.ChildProcess<"pipe"> | undefined;
 	const client = new RpcClient({
+		args,
 		spawn: agentArgs => {
-			_child = ptree.spawn([...agentCommand, ...args, ...agentArgs, ...(resume ? ["--resume", resume] : [])], {
+			_child = ptree.spawn([...agentCommand, ...agentArgs, ...(resume ? ["--resume", resume] : [])], {
 				cwd: state.project,
 				env: state.env,
 				stdin: "pipe",
@@ -257,16 +278,26 @@ async function proveRpc(state: Fixture, resume?: string): Promise<string> {
 			`Canonical search result absent: ${search}`,
 		);
 		const details = await direct(run, "tool_details", { name: "remote_shell_read" });
-		// The declared parameters have to survive into the render. `ToolInfo.parameters` is an
-		// ompType schema — a function — so a consumer that JSON-round-trips it gets `undefined`
-		// back from `JSON.stringify` and stores `{}`; the converter is
-		// `irToJsonSchema(schema.ir)` from `@oh-my-pi/omptype`, which does emit the properties.
 		assert(
-			details.includes("## remote_shell_read") &&
-				details.includes("**Invocation:** xd://remote_shell_read") &&
-				details.includes('"host"') &&
-				details.includes('"path"'),
-			`tool_details returned no parameter schema for xd://remote_shell_read: ${details}`,
+			details.includes("## remote_shell_read") && details.includes("**Invocation:** xd://remote_shell_read"),
+			`Details incomplete: ${details}`,
+		);
+		// `### Parameters` is rendered even when the schema failed to clone, so the heading
+		// proves nothing — the declared property names inside that block do. Slicing to the
+		// block keeps the description prose (which names host and path) from satisfying it, and
+		// matching the bare names keeps a bullet-style render from failing it.
+		//
+		// Known defect outside this repository: the semantic-discovery catalog fills
+		// `parameters` with `JSON.parse(JSON.stringify(tool.parameters))`, and a
+		// `ToolInfo.parameters` is an ompType schema — a function — which `JSON.stringify`
+		// turns into `undefined`, so every catalog record lands `{}` and this renders an empty
+		// block. `irToJsonSchema(schema.ir)` from `@oh-my-pi/omptype` is the converter that
+		// emits the properties.
+		const parameters = details.slice(details.indexOf("### Parameters"));
+		recordDefect(
+			/\bhost\b/.test(parameters) && /\bpath\b/.test(parameters),
+			`tool_details rendered an empty parameter schema for xd://remote_shell_read ` +
+				`(catalog JSON-round-trips a callable ompType schema): ${details}`,
 		);
 		for (const name of remoteNames)
 			assert((await readUri(run, `xd://${name}`)).includes(name), `${name} documentation missing`);
@@ -389,6 +420,12 @@ try {
 		combinedLogs.includes("broken") || combinedLogs.includes("502"),
 		`Controlled MCP failure was suppressed: ${combinedLogs}`,
 	);
+	if (recordedDefects.length > 0) {
+		throw new Error(
+			`Every phase completed; ${recordedDefects.length} recorded defect(s) outside this repository:\n` +
+				recordedDefects.join("\n"),
+		);
+	}
 	console.log("PASS: native extension discovery, dispatch, MCP isolation, switch/resume");
 } catch (error) {
 	console.error(`Smoke failed; retained fixture for inspection: ${state.root}`);

@@ -130,7 +130,9 @@ describe("knowledge configuration", () => {
 				tracks: [],
 				remember: "off",
 				injectRecall: false,
-				recallMaxBytes: DEFAULT_RECALL_MAX_BYTES,
+				// Golden: the documented ceiling. Comparing against the loader's own constant
+				// would pass no matter what value the default is changed to.
+				recallMaxBytes: 32768,
 				startupRecall: [],
 			};
 			expect(loadMemvidkb(dir)).toEqual({ ok: expected });
@@ -623,6 +625,8 @@ describe("KnowledgeProtocolHandler", () => {
 				{ cwd: dir },
 			);
 			expect(resource.content).toContain("- origin: litellm gateway sidecar");
+			// The whitespace collapse in `renderedLine` would flatten a bare tab on its own, so
+			// this pins the rendered shape the model sees rather than isolating `replaceTabs`.
 			expect(resource.content).not.toContain("\t");
 		});
 	});

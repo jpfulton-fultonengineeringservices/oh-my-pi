@@ -13,6 +13,12 @@ import { walkUp } from "../capability/fs";
 const CONFIG_VERSION = 1;
 /** Default ceiling on automatically injected recall text. */
 export const DEFAULT_RECALL_MAX_BYTES = 32768;
+/**
+ * Levels the upward `.memvidkb` search may climb, counting the starting directory.
+ * {@link walkUp} itself runs to the filesystem root, so the bound is applied here: a
+ * stray `.memvidkb` in a shared ancestor must not opt a workspace into `knowledge://`.
+ */
+const CONFIG_SEARCH_MAX_DEPTH = 10;
 
 export interface KnowledgeConfig {
 	/** `.memvidkb` document version; only {@link CONFIG_VERSION} is understood. */
@@ -148,6 +154,8 @@ function invalidConfigError(field: string, expected: string): KnowledgeConfigErr
 	return { code: "INVALID_CONFIG", msg: `Knowledge config field "${field}" must be ${expected}` };
 }
 
+// Phase-3 dependency: local copies until `@oh-my-pi/pi-utils` exports these from
+// `type-guards` (the central-helpers branch is adding them); the call sites then import.
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.trim().length > 0;
 }
@@ -161,10 +169,19 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 async function findMemvidkbConfigPath(cwd: string): Promise<string | null> {
-	// The central upward walk: one implementation, cached directory listings, and the same
-	// file-or-directory match the sync loader makes (a directory named `.memvidkb` reaches
-	// the read and surfaces as a parse error rather than silently skipping the level).
-	return await walkUp(cwd, ".memvidkb");
+	// The central upward walk: one implementation and the same file-or-directory match the
+	// sync loader makes (a directory named `.memvidkb` reaches the read and surfaces as a
+	// parse error rather than silently skipping the level). Directory listings come from the
+	// capability cache, so a `.memvidkb` created after a level was first listed is not seen
+	// until the process restarts.
+	const found = await walkUp(cwd, ".memvidkb");
+	if (found === null) return null;
+	// Each level above the start is one `..` in the relative path, so the count is the depth.
+	const depth = path
+		.relative(path.resolve(cwd), path.dirname(found))
+		.split(path.sep)
+		.filter(s => s === "..").length;
+	return depth < CONFIG_SEARCH_MAX_DEPTH ? found : null;
 }
 
 // Phase-3 dependency: `promptDoc()` cannot await, so this stays the sync mirror of
@@ -172,10 +189,9 @@ async function findMemvidkbConfigPath(cwd: string): Promise<string | null> {
 // at which point both walkers collapse onto the central helper.
 function findMemvidkbConfigPathSync(cwd: string): string | null {
 	let currentDir = path.resolve(cwd);
-	const maxDepth = 10;
 	let depth = 0;
 
-	while (depth < maxDepth) {
+	while (depth < CONFIG_SEARCH_MAX_DEPTH) {
 		const configPath = path.join(currentDir, ".memvidkb");
 		try {
 			fs.accessSync(configPath);

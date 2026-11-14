@@ -3,7 +3,7 @@ import { asRecord, sanitizeText, stringProperty } from "@oh-my-pi/pi-utils";
 import {
 	replaceTabs,
 	sanitizeDisplayLines,
-	shortenEmbeddedPaths,
+	sanitizeDisplayWarning,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -138,6 +138,9 @@ export class KnowledgeProtocolHandler implements ProtocolHandler {
 	 * Advertised only when this workspace has a usable `.memvidkb` and its bearer is set.
 	 * `workspace` pins the directory the upward search starts from, so a caller that knows
 	 * the session's working directory can ask about it without the process changing cwd.
+	 * It is a caller-supplied parameter only because the upstream {@link SchemeHost} carries
+	 * no working directory; once it does, `host.cwd` replaces it and the process-wide default
+	 * disappears, so the advertisement honours the same cwd as {@link resolve}.
 	 */
 	promptDoc(_host?: SchemeHost, workspace: string = process.cwd()): string | undefined {
 		const loaded = loadMemvidkb(workspace);
@@ -225,7 +228,9 @@ async function serviceDetail(response: Response): Promise<string> {
 	}
 	const clipped = body.slice(0, MAX_SERVICE_DETAIL_CHARS);
 	const message = serviceErrorMessage(clipped);
-	return truncateToWidth(replaceTabs(shortenEmbeddedPaths(oneLine(message ?? clipped))), TRUNCATE_LENGTHS.LONG);
+	// One central composition for a single-line display string: control-strip, tabs expanded,
+	// newlines collapsed, embedded home paths shortened, then bounded to TRUNCATE_LENGTHS.LONG.
+	return truncateToWidth(sanitizeDisplayWarning(message ?? clipped), TRUNCATE_LENGTHS.LONG);
 }
 
 function serviceErrorMessage(body: string): string | undefined {
@@ -378,7 +383,7 @@ function renderedProperty(object: Record<string, unknown> | null, key: string): 
 }
 
 // Phase-3 dependency: local copy until `@oh-my-pi/pi-utils` exports `oneLine` (the
-// central-helpers branch is adding it); both call sites then import the central helper.
+// central-helpers branch is adding it); this call site then imports the central helper.
 function oneLine(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
 }
