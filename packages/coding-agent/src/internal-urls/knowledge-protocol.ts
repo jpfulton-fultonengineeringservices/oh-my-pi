@@ -377,6 +377,8 @@ function renderedProperty(object: Record<string, unknown> | null, key: string): 
 	return value ? renderedLine(value) : undefined;
 }
 
+// Phase-3 dependency: local copy until `@oh-my-pi/pi-utils` exports `oneLine` (the
+// central-helpers branch is adding it); both call sites then import the central helper.
 function oneLine(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
 }
