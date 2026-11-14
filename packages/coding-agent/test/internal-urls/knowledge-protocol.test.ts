@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { TempDir } from "@oh-my-pi/pi-utils/temp";
 import {
+	DEFAULT_RECALL_MAX_BYTES,
 	loadMemvidkb,
 	loadMemvidkbConfig,
 	type KnowledgeConfig,
@@ -15,11 +17,11 @@ const TOKEN_ENV = "MEMVIDKB_TEST_TOKEN";
 const TOKEN_VALUE = "test-bearer-token-never-logged";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-protocol-"));
+	const tmp = TempDir.createSync("@knowledge-protocol-");
 	try {
-		return await fn(dir);
+		return await fn(tmp.path());
 	} finally {
-		await fs.rm(dir, { recursive: true, force: true });
+		await tmp.remove();
 	}
 }
 
@@ -38,7 +40,7 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 		tracks: ["notes"],
 		remember: "off",
 		injectRecall: false,
-		recallMaxBytes: 32768,
+		recallMaxBytes: DEFAULT_RECALL_MAX_BYTES,
 		startupRecall: [],
 		...overrides,
 	};
@@ -128,7 +130,7 @@ describe("knowledge configuration", () => {
 				tracks: [],
 				remember: "off",
 				injectRecall: false,
-				recallMaxBytes: 32768,
+				recallMaxBytes: DEFAULT_RECALL_MAX_BYTES,
 				startupRecall: [],
 			};
 			expect(loadMemvidkb(dir)).toEqual({ ok: expected });
@@ -212,7 +214,7 @@ describe("KnowledgeProtocolHandler", () => {
 		await withTempDir(async dir => {
 			const resource = await router.resolve("knowledge://track/work/notes", { cwd: dir });
 			expect(resource.notes).toEqual(["CONFIG_NOT_FOUND"]);
-			expect(resource.content).not.toBe("");
+			expect(resource.content).toContain("No .memvidkb configuration file found");
 			expect(resource.immutable).toBe(true);
 		});
 	});
@@ -305,7 +307,8 @@ describe("KnowledgeProtocolHandler", () => {
 				{ cwd: dir },
 			);
 			expect(calls[0]?.url).toBe("http://knowledge.test/memories/My%20Track/records/doc%201");
-			expect(resource.content).not.toBe("");
+			expect(resource.content).toContain("- id: doc 1");
+			expect(resource.content).toContain("- track: My Track");
 		});
 	});
 
@@ -606,8 +609,38 @@ describe("KnowledgeProtocolHandler", () => {
 				{ cwd: dir },
 			);
 			expect(resource.isDirectory).toBe(true);
-			expect(resource.content).not.toBe("");
 			expect(resource.content).toContain("holds no records");
+		});
+	});
+
+	it("renders service provenance on one line with tabs expanded", async () => {
+		setToken(TOKEN_VALUE);
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			stubFetch(() => Response.json({ ...RECORD_BODY, originActor: "litellm\tgateway\t  sidecar" }));
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://record/work/notes/doc-1"),
+				{ cwd: dir },
+			);
+			expect(resource.content).toContain("- origin: litellm gateway sidecar");
+			expect(resource.content).not.toContain("\t");
+		});
+	});
+
+	it("shortens a home-directory path out of a service error body", async () => {
+		setToken(TOKEN_VALUE);
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			const home = os.homedir();
+			stubFetch(() =>
+				Response.json({ error: { code: "x", message: `cannot read ${home}/kb/notes.md` } }, { status: 500 }),
+			);
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://record/work/notes/doc-1"),
+				{ cwd: dir },
+			);
+			expect(resource.content).toContain("cannot read ~/kb/notes.md");
+			expect(resource.content).not.toContain(home);
 		});
 	});
 
@@ -626,7 +659,6 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(resource.contentType).toBe("text/markdown");
 			expect(resource.content).toContain("other-context");
 			expect(resource.content).toContain("work");
-			expect(resource.content).not.toBe("");
 		});
 	});
 
@@ -643,7 +675,6 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(resource.notes).toEqual(["track_not_permitted"]);
 			expect(resource.content).toContain("private");
 			expect(resource.content).toContain("notes");
-			expect(resource.content).not.toBe("");
 		});
 	});
 
@@ -658,7 +689,6 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(calls).toHaveLength(0);
 			expect(resource.notes).toEqual(["TOKEN_ENV_UNSET"]);
 			expect(resource.content).toContain(TOKEN_ENV);
-			expect(resource.content).not.toBe("");
 		});
 	});
 
@@ -674,7 +704,7 @@ describe("KnowledgeProtocolHandler", () => {
 			);
 			expect(calls).toHaveLength(0);
 			expect(resource.notes).toEqual(["CONFIG_NOT_FOUND"]);
-			expect(resource.content).not.toBe("");
+			expect(resource.content).toContain("No .memvidkb configuration file found");
 			expect(resource.shape).toBe("document");
 		});
 	});
@@ -702,7 +732,6 @@ describe("KnowledgeProtocolHandler", () => {
 					expect(resource.notes).toEqual([testCase.note]);
 					expect(resource.contentType).toBe("text/markdown");
 					expect(resource.shape).toBe("document");
-					expect(resource.content).not.toBe("");
 					expect(resource.content).toContain(`service says ${testCase.status}`);
 					expect(resource.content).not.toContain(TOKEN_VALUE);
 				}
@@ -724,7 +753,6 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(resource.notes).toEqual(["service_unavailable"]);
 			expect(resource.content).toContain("outage");
 			expect(resource.content).toContain("ECONNREFUSED");
-			expect(resource.content).not.toBe("");
 		});
 	});
 
@@ -738,7 +766,7 @@ describe("KnowledgeProtocolHandler", () => {
 				{ cwd: dir },
 			);
 			expect(resource.notes).toEqual(["service_unavailable"]);
-			expect(resource.content).not.toBe("");
+			expect(resource.content).toContain("not JSON");
 		});
 	});
 
@@ -752,7 +780,7 @@ describe("KnowledgeProtocolHandler", () => {
 				{ cwd: dir },
 			);
 			expect(resource.notes).toEqual(["service_unavailable"]);
-			expect(resource.content).not.toBe("");
+			expect(resource.content).toContain("record body without text");
 		});
 	});
 
@@ -787,7 +815,7 @@ describe("KnowledgeProtocolHandler", () => {
 			]) {
 				const resource = await new KnowledgeProtocolHandler().resolve(parseInternalUrl(uri), { cwd: dir });
 				expect(resource.notes).toEqual(["invalid_knowledge_uri"]);
-				expect(resource.content).not.toBe("");
+				expect(resource.content).toContain("Invalid knowledge URI");
 			}
 			expect(calls).toHaveLength(0);
 		});
@@ -795,20 +823,14 @@ describe("KnowledgeProtocolHandler", () => {
 
 	it("advertises knowledge:// only when a usable config exists", async () => {
 		const handler = new KnowledgeProtocolHandler();
-		const cwd = process.cwd();
-		try {
-			await withTempDir(async dir => {
-				process.chdir(dir);
-				expect(handler.promptDoc()).toBeUndefined();
+		await withTempDir(async dir => {
+			expect(handler.promptDoc(undefined, dir)).toBeUndefined();
 
-				await writeConfig(dir, config());
-				// Config alone is not usable: the bearer has to be present too.
-				expect(handler.promptDoc()).toBeUndefined();
-				setToken(TOKEN_VALUE);
-				expect(handler.promptDoc()).toContain("knowledge://record/<context>/<track>/<record-id>");
-			});
-		} finally {
-			process.chdir(cwd);
-		}
+			await writeConfig(dir, config());
+			// Config alone is not usable: the bearer has to be present too.
+			expect(handler.promptDoc(undefined, dir)).toBeUndefined();
+			setToken(TOKEN_VALUE);
+			expect(handler.promptDoc(undefined, dir)).toContain("knowledge://record/<context>/<track>/<record-id>");
+		});
 	});
 });

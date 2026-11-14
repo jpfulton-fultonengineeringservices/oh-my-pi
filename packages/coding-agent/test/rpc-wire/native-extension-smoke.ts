@@ -3,12 +3,15 @@
  * Production-binary proof for native extension discovery, mounted dispatch,
  * independent MCP failure isolation, and session switches/resume.
  *
- * Usage: bun native-extension-smoke.ts /absolute/dist/omp /absolute/config-checkout
+ * Usage: bun native-extension-smoke.ts [omp-binary] [config-checkout]
+ * With no arguments it proves the tree under test: this package's CLI from source,
+ * against the live agent directory, which is where the extensions under proof live.
  * All model, embedding, MCP and SSH traffic is local and scripted.
  */
 import type { AgentEvent, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { RpcClient, type RpcAgentProcess } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
-import { isRecord, ptree, readLines, removeWithRetries } from "@oh-my-pi/pi-utils";
+import type { Server } from "bun";
+import { getAgentDir, isRecord, ptree, readLines, removeWithRetries } from "@oh-my-pi/pi-utils";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -30,16 +33,19 @@ interface RunningRpc {
 }
 
 const binary = process.argv[2] ? path.resolve(process.argv[2]) : "";
-const config = process.argv[3] ? path.resolve(process.argv[3]) : "";
-if (!binary || !config)
-	throw new Error("usage: native-extension-smoke.ts <absolute-omp-binary> <absolute-config-checkout>");
+const config = process.argv[3] ? path.resolve(process.argv[3]) : getAgentDir();
 for (const [kind, file] of [
 	["binary", binary],
 	["config checkout", config],
 ] as const) {
+	if (file.length === 0) continue;
 	if (!path.isAbsolute(file) || !(await fs.stat(file).catch(() => undefined)))
 		throw new Error(`Missing or non-absolute ${kind}: ${file}`);
 }
+/** With no explicit binary, the proof runs against the tree under test: the CLI from source. */
+const agentCommand: string[] = binary
+	? [binary]
+	: [process.execPath, path.resolve(import.meta.dir, "../../src/cli.ts")];
 const providerFixture = path.join(import.meta.dir, "fake-openai-server.ts");
 const peerFixture = path.join(import.meta.dir, "../fixtures/rpc-mcp-server.ts");
 const remoteNames = ["remote_shell", "remote_shell_read", "remote_shell_write"] as const;
@@ -63,15 +69,15 @@ async function waitUntil(
 }
 
 async function jsonl(file: string): Promise<Record<string, unknown>[]> {
-	const text = await fs.readFile(file, "utf8").catch(() => "");
-	const lines = text.split("\n").filter(l => l.trim().length > 0);
-	return lines.length > 0
-		? lines.map(line => {
-				const entry = JSON.parse(line) as unknown;
-				assert(isRecord(entry), `Invalid JSONL entry in ${file}`);
-				return entry;
-			})
-		: [];
+	const text = (
+		await Bun.file(file)
+			.text()
+			.catch(() => "")
+	).trim();
+	if (text.length === 0) return [];
+	const entries = Bun.JSONL.parse(text) as unknown[];
+	for (const entry of entries) assert(isRecord(entry), `Invalid JSONL entry in ${file}`);
+	return entries as Record<string, unknown>[];
 }
 
 function textResult(events: AgentEvent[], toolName: string): string {
@@ -122,8 +128,6 @@ async function fixture(): Promise<Fixture> {
 	const mcpAudit = path.join(root, "mcp.jsonl");
 	const toolAudit = path.join(root, "offered-tools.jsonl");
 	await fs.mkdir(project, { recursive: true });
-	await fs.mkdir(binDir, { recursive: true });
-	await fs.mkdir(extensionDir, { recursive: true });
 	for (const name of ["semantic-tool-discovery.ts", "remote-shell.ts"]) {
 		await fs.cp(path.join(config, "extensions", name), path.join(extensionDir, name));
 	}
@@ -167,7 +171,7 @@ async function fixture(): Promise<Fixture> {
 	return { root, agentDir, project, env, sshAudit, mcpAudit, toolAudit };
 }
 
-function modelService(): { server: ReturnType<typeof Bun.serve>; failedRequests(): number } {
+function modelService(): { server: Server<undefined>; failedRequests(): number } {
 	let failed = 0;
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -203,7 +207,7 @@ async function launch(state: Fixture, resume?: string): Promise<RunningRpc> {
 	let _child: ptree.ChildProcess<"pipe"> | undefined;
 	const client = new RpcClient({
 		spawn: agentArgs => {
-			_child = ptree.spawn([binary, ...agentArgs, ...(resume ? ["--resume", resume] : [])], {
+			_child = ptree.spawn([...agentCommand, ...args, ...agentArgs, ...(resume ? ["--resume", resume] : [])], {
 				cwd: state.project,
 				env: state.env,
 				stdin: "pipe",
@@ -253,9 +257,16 @@ async function proveRpc(state: Fixture, resume?: string): Promise<string> {
 			`Canonical search result absent: ${search}`,
 		);
 		const details = await direct(run, "tool_details", { name: "remote_shell_read" });
+		// The declared parameters have to survive into the render. `ToolInfo.parameters` is an
+		// ompType schema — a function — so a consumer that JSON-round-trips it gets `undefined`
+		// back from `JSON.stringify` and stores `{}`; the converter is
+		// `irToJsonSchema(schema.ir)` from `@oh-my-pi/omptype`, which does emit the properties.
 		assert(
-			details.includes("remote_shell_read") && details.includes("xd://") && details.length > 80,
-			`Details incomplete: ${details}`,
+			details.includes("## remote_shell_read") &&
+				details.includes("**Invocation:** xd://remote_shell_read") &&
+				details.includes('"host"') &&
+				details.includes('"path"'),
+			`tool_details returned no parameter schema for xd://remote_shell_read: ${details}`,
 		);
 		for (const name of remoteNames)
 			assert((await readUri(run, `xd://${name}`)).includes(name), `${name} documentation missing`);

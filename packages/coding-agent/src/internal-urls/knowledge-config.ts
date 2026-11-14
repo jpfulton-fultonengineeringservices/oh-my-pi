@@ -6,11 +6,13 @@
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
+import { isEnoent, isEnotdir } from "@oh-my-pi/pi-utils";
+import { walkUp } from "../capability/fs";
 
 /** The only `.memvidkb` document version this loader understands. */
 const CONFIG_VERSION = 1;
 /** Default ceiling on automatically injected recall text. */
-const DEFAULT_RECALL_MAX_BYTES = 32768;
+export const DEFAULT_RECALL_MAX_BYTES = 32768;
 
 export interface KnowledgeConfig {
 	/** `.memvidkb` document version; only {@link CONFIG_VERSION} is understood. */
@@ -47,7 +49,9 @@ export async function loadMemvidkbConfig(cwd = process.cwd()): Promise<Knowledge
 		const configContent = await fsPromises.readFile(configPath, "utf-8");
 		return withBearerCheck(toKnowledgeConfig(JSON.parse(configContent) as unknown));
 	} catch (error) {
-		return { err: configParseError(error) };
+		// A config removed between the upward search and the read is the same outcome as
+		// never finding one; only a real read or parse failure is reported as a parse error.
+		return { err: isEnoent(error) ? configNotFoundError() : configParseError(error) };
 	}
 }
 
@@ -60,7 +64,7 @@ export function loadMemvidkb(cwd = process.cwd()): KnowledgeConfigResult {
 		const configContent = fs.readFileSync(configPath, "utf-8");
 		return withBearerCheck(toKnowledgeConfig(JSON.parse(configContent) as unknown));
 	} catch (error) {
-		return { err: configParseError(error) };
+		return { err: isEnoent(error) ? configNotFoundError() : configParseError(error) };
 	}
 }
 
@@ -157,26 +161,15 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 async function findMemvidkbConfigPath(cwd: string): Promise<string | null> {
-	let currentDir = path.resolve(cwd);
-	const maxDepth = 10;
-	let depth = 0;
-
-	while (depth < maxDepth) {
-		const configPath = path.join(currentDir, ".memvidkb");
-		try {
-			await fsPromises.access(configPath);
-			return configPath;
-		} catch (error) {
-			if (!isMissingPath(error)) throw error;
-			const parentDir = path.dirname(currentDir);
-			if (parentDir === currentDir) break;
-			currentDir = parentDir;
-			depth++;
-		}
-	}
-	return null;
+	// The central upward walk: one implementation, cached directory listings, and the same
+	// file-or-directory match the sync loader makes (a directory named `.memvidkb` reaches
+	// the read and surfaces as a parse error rather than silently skipping the level).
+	return await walkUp(cwd, ".memvidkb");
 }
 
+// Phase-3 dependency: `promptDoc()` cannot await, so this stays the sync mirror of
+// {@link findMemvidkbConfigPath} until `../capability/fs` gains `walkUpSync` beside `walkUp`,
+// at which point both walkers collapse onto the central helper.
 function findMemvidkbConfigPathSync(cwd: string): string | null {
 	let currentDir = path.resolve(cwd);
 	const maxDepth = 10;
@@ -188,7 +181,7 @@ function findMemvidkbConfigPathSync(cwd: string): string | null {
 			fs.accessSync(configPath);
 			return configPath;
 		} catch (error) {
-			if (!isMissingPath(error)) throw error;
+			if (!(isEnoent(error) || isEnotdir(error))) throw error;
 			const parentDir = path.dirname(currentDir);
 			if (parentDir === currentDir) break;
 			currentDir = parentDir;
@@ -196,13 +189,4 @@ function findMemvidkbConfigPathSync(cwd: string): string | null {
 		}
 	}
 	return null;
-}
-
-function isMissingPath(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error.code === "ENOENT" || error.code === "ENOTDIR")
-	);
 }
