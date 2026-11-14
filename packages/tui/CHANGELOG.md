@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `renderSparkline` takes `series` and `cellsPerBucket` to draw stacked buckets — each bucket's cells divided among the series that contributed to it, with the series index passed to `style` — and `flatFraction` to choose the glyph a zero-span window renders instead of empty or full.
+
 ## [18.20.0] - 2026-11-12
 
 ### Added

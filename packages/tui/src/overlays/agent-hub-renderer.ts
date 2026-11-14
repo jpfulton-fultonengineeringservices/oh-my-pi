@@ -5,7 +5,7 @@ import { Ellipsis, visibleWidth } from "../utils";
 import { formatMetricRow } from "../components/metric";
 import { renderProgressBar } from "../components/progress-bar";
 import { renderTableRow } from "../components/table";
-import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
+import { formatCost as formatUsdCost, formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import type { ThemeColor } from "../theme/theme";
 import { type AgentRecordLike, type AgentStatus, MAIN_AGENT_ID } from "./agent-hub-types";
 import { parseThinkingLevel } from "../thinking";
@@ -259,10 +259,7 @@ export function formatMetricDuration(metrics: AgentMetrics): string | undefined 
 }
 
 export function formatCost(cost: number): string {
-	const amount = metricNumber(cost);
-	if (amount < 0.01) return `$${amount.toFixed(4)}`;
-	if (amount < 1) return `$${amount.toFixed(3)}`;
-	return `$${amount.toFixed(2)}`;
+	return formatUsdCost(metricNumber(cost));
 }
 
 export function formatMetrics(metrics: AgentMetrics): string {
