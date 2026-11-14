@@ -1506,11 +1506,14 @@ describe("CursorExecHandlers mounted tool bridge", () => {
 				return { content: [{ type: "text", text: "edited" }], details: {} };
 			},
 		};
-		// The deny path throws inside resolveApproval before any handler runs;
-		// the stub only needs the loop-emission marker probe the wrapper always
-		// consults first.
+		// The deny path throws inside resolveApproval before any handler runs. The
+		// wrapper consults the loop-emission marker first, then - since the
+		// git-guard denial-visibility change (d072a87aed) - also asks whether a
+		// `tool_result` handler exists, so a listener may rewrite the refusal.
+		// This case asserts the plain throw, so the stub reports no such handler.
 		const wrapped = new ExtensionToolWrapper(device, {
 			consumeToolCallEmitted: () => false,
+			hasHandlers: () => false,
 		} as unknown as ExtensionRunner);
 		const settings = Settings.isolated({ "tools.approval": { ast_edit: "deny" } });
 		const handlers = new CursorExecHandlers({
