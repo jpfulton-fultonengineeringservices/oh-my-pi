@@ -24,7 +24,6 @@
  * With a second argument, writes each request's offered tool names as JSONL.
  */
 import * as path from "node:path";
-import { appendFile } from "node:fs/promises";
 import { type } from "@oh-my-pi/omptype";
 
 const chatRequestSchema = type({
@@ -36,7 +35,7 @@ const chatRequestSchema = type({
 type ChatRequest = typeof chatRequestSchema.infer;
 
 type Reply = { text: string } | { tool: string; args: Record<string, unknown> };
-const offeredToolAudit = process.argv[3];
+const offeredToolAudit = process.argv[3] ? Bun.file(process.argv[3]).writer() : undefined;
 
 function messageText(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -137,10 +136,9 @@ const server = Bun.serve({
 		if (!url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 });
 		const body = chatRequestSchema.assert(await request.json());
 		if (offeredToolAudit) {
-			await appendFile(
-				offeredToolAudit,
-				`${JSON.stringify({ tools: (body.tools ?? []).map(tool => tool.function?.name ?? "") })}\n`,
-			);
+			const offered = (body.tools ?? []).map(tool => tool.function?.name ?? "");
+			offeredToolAudit.write(`${JSON.stringify({ tools: offered })}\n`);
+			await offeredToolAudit.flush();
 		}
 		const reply = scriptedReply(body);
 		if (!body.stream) return Response.json(completionBody(reply));

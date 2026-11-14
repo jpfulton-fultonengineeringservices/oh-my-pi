@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `formatCost` to `@oh-my-pi/pi-utils/format`: USD with enough precision to show the 1e-6…1e-3 per-call gateway charges a fixed 4-decimal floor renders as `$0.0000`, and the same band tiers as the hub's cost column.
+- Added `formatRate` and `formatRateStats` to `@oh-my-pi/pi-utils/format`: a token rate with one decimal below 100 and none above, and its `med … · avg … · min … · max … · σ …` spread.
+- Added `oneLine` to `@oh-my-pi/pi-utils/format`: collapses a multi-line value onto one line for a table cell or status line.
+- Added `@oh-my-pi/pi-utils/bounded-set`: `BoundedSet`, an insertion-ordered set of strings with a capacity and `rebind`, beside `LRUCache` and `RingBuffer`.
+- Added `@oh-my-pi/pi-utils/write-atomic`: `writeAtomic`, a write to a same-directory temp file then a rename, creating parent directories.
+- Added `parseYamlConfig` and `readConfigBlock` to `@oh-my-pi/pi-utils/yaml-config`: the readers for what `stringifyYamlConfig` writes, so one `config.yml` has one parser.
+- Added `isNonEmptyString`, `isNonEmptyStringArray` and `isPositiveInteger` to `@oh-my-pi/pi-utils/type-guards`.
+
 ## [18.19.0] - 2026-11-12
 
 ### Added
