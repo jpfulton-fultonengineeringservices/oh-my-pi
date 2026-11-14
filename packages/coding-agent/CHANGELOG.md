@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `walkUpSync` to `@oh-my-pi/pi-coding-agent/capability/fs` beside `walkUp`: the same upward scan with the same entry-kind rules and the same directory cache, for a synchronous call path such as config discovery at module load.
+
 ## [18.20.0] - 2026-11-12
 
 ### Breaking Changes

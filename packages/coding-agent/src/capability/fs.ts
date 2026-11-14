@@ -55,6 +55,28 @@ export async function readDir(dirPath: string): Promise<string[]> {
 	return entries.map(entry => entry.name);
 }
 
+/** Sibling of {@link readDirEntries}: the same cache, filled by a synchronous scan. */
+function readDirEntriesSync(dirPath: string): fs.Dirent[] {
+	const abs = resolvePath(dirPath);
+	if (dirCache.has(abs)) {
+		return dirCache.get(abs) ?? [];
+	}
+
+	try {
+		const entries = fs.readdirSync(abs, { withFileTypes: true });
+		dirCache.set(abs, entries);
+		return entries;
+	} catch {
+		dirCache.set(abs, []);
+		return [];
+	}
+}
+
+/** Whether a found entry satisfies the kinds the walk was asked for. */
+function matchesKind(entry: fs.Dirent, file: boolean, dir: boolean): boolean {
+	return (file && entry.isFile()) || (dir && entry.isDirectory());
+}
+
 export async function walkUp(
 	startDir: string,
 	name: string,
@@ -66,10 +88,31 @@ export async function walkUp(
 	while (true) {
 		const entries = await readDirEntries(current);
 		const entry = entries.find(e => e.name === name);
-		if (entry) {
-			if (file && entry.isFile()) return path.join(current, name);
-			if (dir && entry.isDirectory()) return path.join(current, name);
-		}
+		if (entry && matchesKind(entry, file, dir)) return path.join(current, name);
+		const parent = path.dirname(current);
+		if (parent === current) return null;
+		current = parent;
+	}
+}
+
+/**
+ * Synchronous {@link walkUp}: same upward scan, same entry-kind rules, and the same
+ * directory cache, so a directory read by either is read once. Use it from a
+ * synchronous call path (config discovery at module load); everything else should
+ * await {@link walkUp}.
+ */
+export function walkUpSync(
+	startDir: string,
+	name: string,
+	opts: { file?: boolean; dir?: boolean } = {},
+): string | null {
+	const { file = true, dir = true } = opts;
+	let current = resolvePath(startDir);
+
+	while (true) {
+		const entries = readDirEntriesSync(current);
+		const entry = entries.find(e => e.name === name);
+		if (entry && matchesKind(entry, file, dir)) return path.join(current, name);
 		const parent = path.dirname(current);
 		if (parent === current) return null;
 		current = parent;
