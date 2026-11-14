@@ -87,7 +87,13 @@ export function formatCost(cost: number, maxFractionDigits?: number): string {
 	while (digits < cap && Number(amount.toFixed(digits)) !== amount) digits++;
 	// Only a widened fraction is trimmed: a caller-chosen width stays fixed so
 	// columns line up, and only the recovered digits are noise worth dropping.
-	const text = digits > COST_DIGITS_SUB_CENT ? amount.toFixed(digits).replace(/0+$/, "") : amount.toFixed(digits);
+	// Below the cap's resolution every fraction digit rounds away, and stripping
+	// that would print a dangling point ("$0."), so the width is kept there.
+	let text = amount.toFixed(digits);
+	if (digits > COST_DIGITS_SUB_CENT) {
+		const trimmed = text.replace(/0+$/, "");
+		if (!trimmed.endsWith(".")) text = trimmed;
+	}
 	return `${sign}$${text}`;
 }
 

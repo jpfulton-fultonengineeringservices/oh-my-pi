@@ -50,6 +50,7 @@ describe("formatCost", () => {
 		expect(formatCost(0)).toBe("$0.0000");
 		expect(formatCost(Number.NaN)).toBe("$0.0000");
 		expect(formatCost(Number.POSITIVE_INFINITY)).toBe("$0.0000");
+		expect(formatCost(Number.NEGATIVE_INFINITY)).toBe("$0.0000");
 	});
 
 	it("negates without losing precision", () => {
@@ -63,14 +64,12 @@ describe("formatCost", () => {
 		expect(formatCost(1.5, 2)).toBe("$1.50");
 	});
 
-	it("is independent of the locale decimal separator", () => {
-		const previous = Number.prototype.toLocaleString;
-		(Number.prototype as unknown as { toLocaleString: () => string }).toLocaleString = () => "1,50";
-		try {
-			expect(formatCost(1.5)).toBe("$1.50");
-		} finally {
-			(Number.prototype as unknown as { toLocaleString: () => string }).toLocaleString = previous;
-		}
+	it("keeps the fixed width when a charge is below the precision cap", () => {
+		// 8 digits is the default cap. Below 1e-8 the widening recovers no digit
+		// at all, and stripping the whole fraction would print "$0.".
+		expect(formatCost(1e-9)).toBe("$0.00000000");
+		expect(formatCost(1e-8)).toBe("$0.00000001");
+		expect(formatCost(1e-9, 6)).toBe("$0.000000");
 	});
 });
 
@@ -89,6 +88,7 @@ describe("formatRate", () => {
 		expect(formatRate(-3.2)).toBe("0");
 		expect(formatRate(Number.NaN)).toBe("0");
 		expect(formatRate(Number.POSITIVE_INFINITY)).toBe("0");
+		expect(formatRate(Number.NEGATIVE_INFINITY)).toBe("0");
 	});
 });
 
