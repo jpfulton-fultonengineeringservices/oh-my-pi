@@ -2,7 +2,10 @@ telemetry = false
 
 [install]
 minimumReleaseAge = 259200 # 3 days in seconds
-minimumReleaseAgeExcludes = ["@types/bun", "bun-types", "kitty-vt-wasm", "@stencil-hq/vibemon"]
+# @tavily/core 1.1.0 is inside the cooldown and is the first release that exports
+# createTransport — the seam packages/tavily builds its own verbs on — so the pin
+# cannot drop to 1.0.0 to satisfy the age check. Exempted deliberately.
+minimumReleaseAgeExcludes = ["@types/bun", "bun-types", "kitty-vt-wasm", "@stencil-hq/vibemon", "@tavily/core"]
 linker = "hoisted"
 exact = true
 saveTextLockfile = true
