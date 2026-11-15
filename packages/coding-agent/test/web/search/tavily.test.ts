@@ -223,4 +223,90 @@ describe("Tavily searchTavily request shape (integration)", () => {
 			},
 		]);
 	});
+
+	it("maps an empty result body to an undefined snippet rather than the empty string", async () => {
+		process.env.TAVILY_API_KEY = "test-key";
+		const fetchMock: FetchImpl = async () =>
+			new Response(
+				JSON.stringify({
+					results: [{ title: "Empty", url: "https://example.com/empty", content: "" }],
+					request_id: "req-empty",
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+
+		const response = await searchTavily({ ...makeParams("empty body"), fetch: fetchMock });
+
+		expect(response.sources).toHaveLength(1);
+		expect(response.sources[0]).toEqual({
+			title: "Empty",
+			url: "https://example.com/empty",
+			snippet: undefined,
+			publishedDate: undefined,
+			ageSeconds: undefined,
+		});
+	});
+
+	it("aborts an in-flight request when the caller aborts, re-throwing the abort reason", async () => {
+		process.env.TAVILY_API_KEY = "test-key";
+		const ac = new AbortController();
+		let adapterSignal: AbortSignal | undefined;
+		// The mock never resolves on its own — the only way out is a cancelled
+		// signal — so a delegation that drops `signal` on the way to `fetch` hangs
+		// here instead of passing. `entered` is awaited rather than slept on.
+		const { promise: entered, resolve: markEntered } = Promise.withResolvers<void>();
+		const fetchMock: FetchImpl = (_input, init) => {
+			adapterSignal = init?.signal ?? undefined;
+			markEntered();
+			const { promise, reject } = Promise.withResolvers<Response>();
+			const rejectAbort = () => reject(init?.signal?.reason ?? new DOMException("aborted", "AbortError"));
+			if (init?.signal?.aborted) rejectAbort();
+			else init?.signal?.addEventListener("abort", rejectAbort, { once: true });
+			return promise;
+		};
+
+		const pending = searchTavily({ ...makeParams("cancel me", { fetch: fetchMock, signal: ac.signal }) });
+		await entered;
+		ac.abort();
+
+		const error = await pending.catch((cause: unknown) => cause);
+		expect((error as { name?: string }).name).toBe("AbortError");
+		expect((error as { message?: string }).message ?? "").not.toContain("Tavily request failed");
+		// The injected fetch must see the *composed* signal, not the raw caller one:
+		// that is what keeps the pipeline's hard timeout authoritative.
+		expect(adapterSignal).toBeInstanceOf(AbortSignal);
+		expect(adapterSignal).not.toBe(ac.signal);
+		expect(adapterSignal?.aborted).toBe(true);
+	});
+
+	it("hard-times out an in-flight request the caller never aborts", async () => {
+		process.env.TAVILY_API_KEY = "test-key";
+		let adapterSignal: AbortSignal | undefined;
+		let cancelled = false;
+		// Real timer on purpose: `withHardTimeout` wraps `AbortSignal.timeout`, which
+		// fake timers cannot drive. The test awaits the abort itself, so its cost is
+		// the 40 ms budget it is asserting on, not a guessed sleep.
+		const fetchMock: FetchImpl = (_input, init) => {
+			adapterSignal = init?.signal ?? undefined;
+			const { promise, reject } = Promise.withResolvers<Response>();
+			init?.signal?.addEventListener(
+				"abort",
+				() => {
+					cancelled = true;
+					reject(init?.signal?.reason ?? new DOMException("timeout", "TimeoutError"));
+				},
+				{ once: true },
+			);
+			return promise;
+		};
+
+		const error = await searchTavily({
+			...makeParams("stalled socket", { fetch: fetchMock, timeoutMs: 40 }),
+		}).catch((cause: unknown) => cause);
+
+		expect(cancelled).toBe(true);
+		expect((error as { name?: string }).name).toBe("TimeoutError");
+		expect((error as { message?: string }).message ?? "").not.toContain("Tavily request failed");
+		expect(adapterSignal).toBeInstanceOf(AbortSignal);
+	});
 });

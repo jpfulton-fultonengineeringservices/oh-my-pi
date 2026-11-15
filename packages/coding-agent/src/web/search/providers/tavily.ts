@@ -148,8 +148,10 @@ function toHeaderRecord(headers: unknown): Record<string, string> {
  * Adapt a caller-supplied {@link FetchImpl} to the package's axios adapter.
  *
  * The vendor transport is axios, so the injected `fetch` has to speak axios'
- * adapter contract: `config.data` arrives already serialised, the request
- * headers (including `Authorization`) arrive on `config.headers`, and a
+ * adapter contract itself: `config.data` is still the body *object* (axios
+ * serialises only inside its own adapters, which a custom adapter bypasses),
+ * the request headers (including `Authorization`) arrive on `config.headers` as
+ * an `AxiosHeaders`, and a
  * response `validateStatus` rejects must be *rejected* by the adapter — axios
  * applies `validateStatus` inside its own adapters only, so resolving a 401
  * would hand an error body back as a successful (empty) search. The exchange
