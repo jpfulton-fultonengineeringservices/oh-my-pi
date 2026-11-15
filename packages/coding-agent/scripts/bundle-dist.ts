@@ -38,7 +38,15 @@ const inlineNativeNoticesPlugin: Bun.BunPlugin = {
 // import would load the unpatched npm package in users' installs (currently
 // @ark/schema is patched, so it — and arktype, which pulls @ark/schema — stay
 // bundled).
-const RUNTIME_EXTERNAL = ["puppeteer-core", "@babel/parser"];
+//
+// `kerberos` is the exception to that rationale: it is a declared dependency of nothing
+// and will never resolve from node_modules. `@tavily/core` inlines proxy-agent-negotiate,
+// which reaches `kerberos` through a guarded `import("kerberos")` on the Negotiate-proxy
+// path only. Externalizing keeps that call as a runtime import in the output, so the
+// vendor's own try/catch turns its absence into its "install kerberos" error instead of
+// the bundler failing the build — or baking in a module nobody ships. NEVER externalize
+// `@oh-my-pi/pi-tavily` / `@tavily/core` for the same reason: the CLI must ship the wire.
+const RUNTIME_EXTERNAL = ["puppeteer-core", "@babel/parser", "kerberos"];
 
 async function runCommand(command: string[]): Promise<void> {
 	const proc = Bun.spawn(command, {
