@@ -93,6 +93,9 @@ const fastWorkspacePackages = [
 	"packages/snapcompact",
 	"packages/agent",
 	"packages/mnemopi",
+	// Talks only to a loopback mock server, so it needs no more of the CI setup than
+	// the other small packages here; without this line `bun run test:ts` never runs it.
+	"packages/tavily",
 ];
 
 // These suites cover the native package, TUI/browser-ish behavior, local servers,
