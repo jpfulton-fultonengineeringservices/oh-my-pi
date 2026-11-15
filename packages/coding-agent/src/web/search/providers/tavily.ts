@@ -2,9 +2,30 @@
  * Tavily Web Search Provider
  *
  * Uses Tavily's agent-focused search API to return structured results with an
- * optional synthesized answer.
+ * optional synthesized answer. All HTTP goes through `@oh-my-pi/pi-tavily`:
+ * this module owns the `web_search`-side contract only — credential lookup,
+ * the pinned wire defaults, the hard timeout, and the `SearchResponse`
+ * mapping. A caller-supplied `fetch` is honoured by wrapping it into the
+ * package's axios adapter; with none supplied the global `fetch` runs through
+ * the same adapter, so abort and timeout enforcement live in exactly one place.
  */
-import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
+import {
+	type ApiKey,
+	type AuthStorage,
+	type FetchImpl,
+	getEnvApiKey,
+	NO_AUTH_SENTINEL,
+	withAuth,
+} from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import {
+	buildSearchBody,
+	createTavilyClient,
+	tavilySearch,
+	type TavilyAxiosAdapter,
+	type TavilySearchResult,
+	type TavilySearchParams as TavilyClientSearchParams,
+} from "@oh-my-pi/pi-tavily";
 import type { SearchResponse, SearchSource } from "../types";
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery } from "../query";
@@ -13,9 +34,12 @@ import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, siteHosts, withHardTimeout } from "./utils";
 
-const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
 const DEFAULT_NUM_RESULTS = 5;
 const MAX_NUM_RESULTS = 20;
+
+/** Kept in sync with {@link withAuth}'s `missingKeyMessage`. */
+const MISSING_KEY_MESSAGE =
+	'Tavily credentials not found. Set TAVILY_API_KEY or configure an API key for provider "tavily".';
 
 export interface TavilySearchParams {
 	query: string;
@@ -34,12 +58,6 @@ export interface TavilySearchParams {
 	fetch?: FetchImpl;
 }
 
-interface TavilySearchResponse {
-	answer?: unknown;
-	results?: unknown;
-	request_id?: unknown;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
 	if (typeof value !== "object" || value === null) return null;
 	return value as Record<string, unknown>;
@@ -50,15 +68,12 @@ function getErrorMessage(value: unknown): string | null {
 		const trimmed = value.trim();
 		return trimmed.length > 0 ? trimmed : null;
 	}
-
 	const record = asRecord(value);
 	if (!record) return null;
-
 	for (const key of ["detail", "error", "message"]) {
 		const message = getErrorMessage(record[key]);
 		if (message) return message;
 	}
-
 	return null;
 }
 
@@ -71,99 +86,192 @@ export async function findApiKey(
 	return (await authStorage.keys.get("tavily", sessionId, { signal })) ?? null;
 }
 
+/**
+ * The provider's pinned camelCase search parameters.
+ *
+ * Tavily's `topic` (general/news/finance) and `time_range` are orthogonal
+ * dimensions in the upstream API. Recency is a temporal filter only; it must
+ * not narrow the index to news-only, which would break technical queries
+ * (release notes, docs, GitHub) whenever a user sets --recency. `topic` is
+ * therefore never set here, and {@link buildSearchBody} drops `time_range`
+ * whenever explicit `start_date`/`end_date` bounds are present.
+ */
+function toClientSearchParams(params: TavilySearchParams): TavilyClientSearchParams {
+	const clientParams: TavilyClientSearchParams = {
+		query: params.query,
+		searchDepth: "basic",
+		maxResults: clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS),
+		includeAnswer: "advanced",
+		includeRawContent: false,
+	};
+	if (params.include_domains?.length) clientParams.includeDomains = params.include_domains;
+	if (params.exclude_domains?.length) clientParams.excludeDomains = params.exclude_domains;
+	if (params.start_date) clientParams.startDate = params.start_date;
+	if (params.end_date) clientParams.endDate = params.end_date;
+	if (params.recency) clientParams.timeRange = params.recency;
+	return clientParams;
+}
+
 /** Exported for testing. Builds the Tavily request body from unified params. */
 export function buildRequestBody(params: TavilySearchParams): Record<string, unknown> {
-	const numResults = clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
-	// Tavily's `topic` (general/news/finance) and `time_range` are orthogonal
-	// dimensions in the upstream API. Recency is a temporal filter only; it must
-	// not narrow the index to news-only, which would break technical queries
-	// (release notes, docs, GitHub) whenever a user sets --recency. Always use
-	// the default "general" topic and only send `time_range` when recency is set.
-	const body: Record<string, unknown> = {
-		query: params.query,
-		search_depth: "basic",
-		max_results: numResults,
-		include_answer: "advanced",
-		include_raw_content: false,
-	};
-	if (params.include_domains?.length) {
-		body.include_domains = params.include_domains;
-	}
-	if (params.exclude_domains?.length) {
-		body.exclude_domains = params.exclude_domains;
-	}
-	if (params.start_date) {
-		body.start_date = params.start_date;
-	}
-	if (params.end_date) {
-		body.end_date = params.end_date;
-	}
-	// Explicit before:/after: bounds take precedence over the relative recency
-	// window; sending both would over-restrict.
-	if (params.recency && !params.start_date && !params.end_date) {
-		body.time_range = params.recency;
-	}
-	return body;
+	return buildSearchBody(toClientSearchParams(params));
 }
 
-async function callTavilySearch(apiKey: string, params: TavilySearchParams): Promise<TavilySearchResponse> {
-	const response = await (params.fetch ?? fetch)(TAVILY_SEARCH_URL, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			Authorization: `Bearer ${apiKey}`,
-		},
-		body: JSON.stringify(buildRequestBody(params)),
-		signal: withHardTimeout(params.signal, params.timeoutMs),
-	});
+/** A non-2xx Tavily answer, captured before the vendor transport flattens it. */
+interface TavilyHttpExchange {
+	status: number;
+	statusText: string;
+	body: string;
+}
 
-	if (!response.ok) {
-		const errorText = await response.text();
-		const classified = classifyProviderHttpError("tavily", response.status, errorText);
-		if (classified) throw classified;
-		let message = errorText.trim();
-		if (message.length === 0) {
-			message = response.statusText;
-		} else {
-			try {
-				message = getErrorMessage(JSON.parse(errorText)) ?? message;
-			} catch {
-				// Keep raw text fallback.
-			}
+/** Rejection carrying the HTTP exchange; see {@link createFetchAdapter}. */
+class TavilyHttpExchangeError extends Error {
+	constructor(exchange: TavilyHttpExchange) {
+		super(`Tavily API error (${exchange.status})`);
+		this.name = "TavilyHttpExchangeError";
+	}
+}
+
+/** Plain header record from an axios `AxiosHeaders` (or a plain object). */
+function toHeaderRecord(headers: unknown): Record<string, string> {
+	const source = headers as { toJSON?: () => Record<string, unknown> } | undefined;
+	const entries = Object.entries(source?.toJSON ? source.toJSON() : ((headers ?? {}) as Record<string, unknown>));
+	const record: Record<string, string> = {};
+	for (const [name, value] of entries) {
+		if (value === undefined || value === null) continue;
+		record[name] = typeof value === "string" ? value : String(value);
+	}
+	return record;
+}
+
+/**
+ * Adapt a caller-supplied {@link FetchImpl} to the package's axios adapter.
+ *
+ * The vendor transport is axios, so the injected `fetch` has to speak axios'
+ * adapter contract: `config.data` arrives already serialised, the request
+ * headers (including `Authorization`) arrive on `config.headers`, and a
+ * response `validateStatus` rejects must be *rejected* by the adapter — axios
+ * applies `validateStatus` inside its own adapters only, so resolving a 401
+ * would hand an error body back as a successful (empty) search. The exchange
+ * is recorded in `exchanges` because the transport's error mapping keeps an
+ * HTTP status only on a real `AxiosError`, which a hand-written adapter cannot
+ * produce without depending on axios itself.
+ */
+function createFetchAdapter(
+	fetchImpl: FetchImpl,
+	signal: AbortSignal,
+	exchanges: TavilyHttpExchange[],
+): NonNullable<TavilyAxiosAdapter> {
+	return async config => {
+		const data = config.data;
+		const body = data === undefined ? undefined : typeof data === "string" ? data : JSON.stringify(data);
+		const response = await fetchImpl(config.url ?? "", {
+			method: (config.method ?? "post").toUpperCase(),
+			headers: toHeaderRecord(config.headers),
+			body,
+			signal,
+		});
+		const text = await response.text();
+		const accepted = config.validateStatus ? config.validateStatus(response.status) : response.ok;
+		if (!accepted) {
+			const exchange: TavilyHttpExchange = { status: response.status, statusText: response.statusText, body: text };
+			exchanges.push(exchange);
+			throw new TavilyHttpExchangeError(exchange);
 		}
-		throw new SearchProviderError("tavily", `Tavily API error (${response.status}): ${message}`, response.status);
-	}
-
-	const payload: unknown = await response.json();
-	return asRecord(payload) ?? {};
+		return {
+			data: JSON.parse(text) as unknown,
+			status: response.status,
+			statusText: response.statusText,
+			headers: {},
+			config,
+			request: {},
+		};
+	};
 }
 
-function toSearchResponse(response: TavilySearchResponse, numResults: number): SearchResponse {
+/** Map a captured non-2xx exchange onto the provider error the chain expects. */
+function toHttpError(exchange: TavilyHttpExchange): SearchProviderError {
+	const classified = classifyProviderHttpError("tavily", exchange.status, exchange.body);
+	if (classified) return classified;
+	let message = exchange.body.trim();
+	if (message.length === 0) {
+		message = exchange.statusText;
+	} else {
+		try {
+			message = getErrorMessage(JSON.parse(exchange.body)) ?? message;
+		} catch {
+			// Keep raw text fallback.
+		}
+	}
+	return new SearchProviderError("tavily", `Tavily API error (${exchange.status}): ${message}`, exchange.status);
+}
+
+/** HTTP budget in seconds; the transport's own unit, derived from the pipeline's ms. */
+function timeoutSecondsFromMs(timeoutMs: number | undefined): number | undefined {
+	if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+	return Math.max(1, Math.ceil(timeoutMs / 1000));
+}
+
+async function callTavilySearch(apiKey: string, params: TavilySearchParams): Promise<TavilySearchResult> {
+	// A resolver may hand back the keyless marker or an empty string; neither may
+	// reach the wire, and neither may fall through to the package's env lookup.
+	const trimmed = apiKey.trim();
+	if (!trimmed || trimmed === NO_AUTH_SENTINEL) throw new AIError.MissingApiKeyError(undefined, MISSING_KEY_MESSAGE);
+
+	// The pipeline owns the hard timeout; the same signal cancels the injected fetch.
+	const signal = withHardTimeout(params.signal, params.timeoutMs);
+	const exchanges: TavilyHttpExchange[] = [];
+	const clientParams = toClientSearchParams(params);
+	clientParams.signal = signal;
+	clientParams.timeoutSeconds = timeoutSecondsFromMs(params.timeoutMs);
+
+	const client = createTavilyClient({
+		apiKey: trimmed,
+		// The vendor transport never forwards an AbortSignal to axios, so this
+		// module always provides the adapter: the caller's `fetch` when given,
+		// the global one otherwise. One path keeps `signal` cancelling the
+		// socket and leaves the pipeline's hard timeout as the only authority.
+		adapter: createFetchAdapter(params.fetch ?? fetch, signal, exchanges),
+	});
+	const result = await tavilySearch(client, clientParams);
+	return settleTavilyResult(result, exchanges, signal);
+}
+
+/** Turn the verb's result-or-failure into data, or into the provider's error type. */
+function settleTavilyResult(
+	result: Awaited<ReturnType<typeof tavilySearch>>,
+	exchanges: TavilyHttpExchange[],
+	signal: AbortSignal,
+): TavilySearchResult {
+	if (result.ok) return result.data;
+	const exchange = exchanges[exchanges.length - 1];
+	if (exchange) throw toHttpError(exchange);
+	if (signal.aborted) throw signal.reason;
+	throw new SearchProviderError("tavily", `Tavily request failed: ${result.error.message}`);
+}
+
+function toSearchResponse(response: TavilySearchResult, numResults: number): SearchResponse {
 	const sources: SearchSource[] = [];
 
-	if (Array.isArray(response.results)) {
-		for (const value of response.results) {
-			const result = asRecord(value);
-			if (!result || typeof result.url !== "string" || !result.url) continue;
-			const title = typeof result.title === "string" && result.title ? result.title : result.url;
-			const snippet = typeof result.content === "string" ? result.content : undefined;
-			const publishedDate = typeof result.published_date === "string" ? result.published_date : undefined;
-			sources.push({
-				title,
-				url: result.url,
-				snippet,
-				publishedDate,
-				ageSeconds: dateToAgeSeconds(publishedDate),
-			});
-		}
+	for (const result of response.results) {
+		if (!result.url) continue;
+		const title = result.title || result.url;
+		const snippet = result.content.length > 0 ? result.content : undefined;
+		sources.push({
+			title,
+			url: result.url,
+			snippet,
+			publishedDate: result.publishedDate,
+			ageSeconds: dateToAgeSeconds(result.publishedDate),
+		});
 	}
 
-	const answer = typeof response.answer === "string" ? response.answer.trim() || undefined : undefined;
+	const answer = response.answer?.trim() || undefined;
 	return {
 		provider: "tavily",
 		answer,
 		sources: sources.slice(0, numResults),
-		requestId: typeof response.request_id === "string" ? response.request_id : undefined,
+		requestId: response.requestId,
 		authMode: "api_key",
 	};
 }
@@ -201,8 +309,7 @@ export async function searchTavily(params: SearchParams): Promise<SearchResponse
 	const numResults = clampNumResults(tavilyParams.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const authOptions = {
 		signal: params.signal,
-		missingKeyMessage:
-			'Tavily credentials not found. Set TAVILY_API_KEY or configure an API key for provider "tavily".',
+		missingKeyMessage: MISSING_KEY_MESSAGE,
 	};
 	const callWithAuth = (searchParams: TavilySearchParams) =>
 		withAuth(keyOrResolver, key => callTavilySearch(key, searchParams), authOptions);
