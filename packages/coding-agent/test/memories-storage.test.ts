@@ -208,7 +208,9 @@ describe("memories/storage", () => {
 
 		const model = createMemoryTestModel();
 		const settings = Settings.isolated({
-			"memories.enabled": true,
+			// The startup scan belongs to the retained rollout-summary pipeline; `local` is retired from
+			// the selector, so the suite drives the pipeline by naming the id it exercises.
+			"memory.backend": "local",
 			"memories.minRolloutIdleHours": 0,
 			"memories.maxRolloutsPerStartup": 16,
 			"memories.threadScanLimit": 64,

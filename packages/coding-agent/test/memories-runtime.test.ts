@@ -68,7 +68,10 @@ async function createFixture(overrides?: Partial<Record<string, unknown>>): Prom
 	await fs.writeFile(sessionFile, `${JSON.stringify({ type: "session", id: "current-thread", cwd: agentDir })}\n`);
 
 	const settings = Settings.isolated({
-		"memories.enabled": true,
+		// The rollout-summary pipeline is retained code that the selector no longer reaches (`local` is
+		// retired), so this engine-level suite names the id it drives directly instead of reaching it
+		// through the `memories.enabled` migration, which now lands on `off`.
+		"memory.backend": "local",
 		"memories.minRolloutIdleHours": 0,
 		"memories.maxRolloutsPerStartup": 16,
 		"memories.threadScanLimit": 64,
@@ -148,27 +151,21 @@ describe("memories runtime", () => {
 	});
 
 	test("startup gating follows memory.backend and skips subagents", async () => {
-		const disabled = await createFixture({ "memories.enabled": false });
+		// Gating is the selector alone (memories/index.ts gates on `memory.backend === "local"`);
+		// `memories.enabled` is migration input with no runtime power. It stays set on the off case so a
+		// regression that revives the flag as a gate cannot pass unnoticed.
+		const off = await createFixture({ "memory.backend": "off", "memories.enabled": true });
 		const openSpy = vi.spyOn(memoryStorage, "openMemoryDb");
 		startMemoryStartupTask({
-			session: disabled.session,
-			settings: disabled.settings,
-			modelRegistry: disabled.modelRegistry,
-			agentDir: disabled.agentDir,
-			taskDepth: 0,
-		});
-		expect(openSpy).not.toHaveBeenCalled();
-		const explicitlyOff = await createFixture({ "memory.backend": "off", "memories.enabled": true });
-		startMemoryStartupTask({
-			session: explicitlyOff.session,
-			settings: explicitlyOff.settings,
-			modelRegistry: explicitlyOff.modelRegistry,
-			agentDir: explicitlyOff.agentDir,
+			session: off.session,
+			settings: off.settings,
+			modelRegistry: off.modelRegistry,
+			agentDir: off.agentDir,
 			taskDepth: 0,
 		});
 		expect(openSpy).not.toHaveBeenCalled();
 
-		const subagent = await createFixture({ "memories.enabled": true });
+		const subagent = await createFixture();
 		startMemoryStartupTask({
 			session: subagent.session,
 			settings: subagent.settings,
