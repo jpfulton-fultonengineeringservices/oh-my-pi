@@ -157,8 +157,16 @@ afterEach(() => {
 	server.stop(true);
 });
 
-/** Read the bearer through every fork gate that decides whether a request may happen. */
-async function decisions(dir: string): Promise<{ loader: unknown; asyncLoader: unknown; backendLoader: unknown }> {
+/**
+ * Read the bearer through every fork gate that decides whether a request may happen.
+ * The result types stay inferred on purpose: `"ok" in ...` and `backend.error` are the
+ * assertions, and they only typecheck against the loaders' real unions.
+ */
+async function decisions(dir: string): Promise<{
+	loader: ReturnType<typeof loadMemvidkb>;
+	asyncLoader: Awaited<ReturnType<typeof loadMemvidkbConfig>>;
+	backendLoader: Awaited<ReturnType<typeof loadMemvidkbBackendConfig>>;
+}> {
 	return {
 		loader: loadMemvidkb(dir),
 		asyncLoader: await loadMemvidkbConfig(dir),

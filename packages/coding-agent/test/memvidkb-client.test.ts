@@ -328,7 +328,7 @@ describe("memvidkb client records", () => {
 
 	it("says plainly that an unreachable write stored nothing", async () => {
 		const outcome = await rememberRecord(
-			{ baseUrl: closedPortBaseUrl, token: TOKEN },
+			{ baseUrl: closedPortBaseUrl, tokenEnvVar: TOKEN_ENV, token: TOKEN },
 			{ track: "dev", content: "x", originActor: "user" },
 		);
 		expect(outcome.ok).toBe(false);
@@ -372,7 +372,7 @@ describe("memvidkb client health", () => {
 	});
 
 	it("reports an unreachable service through the outage prefix", async () => {
-		const outcome = await health({ baseUrl: closedPortBaseUrl, token: TOKEN });
+		const outcome = await health({ baseUrl: closedPortBaseUrl, tokenEnvVar: TOKEN_ENV, token: TOKEN });
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
 		expect(outcome.error.startsWith(KNOWLEDGE_ERROR_PREFIX.unreachable)).toBe(true);
