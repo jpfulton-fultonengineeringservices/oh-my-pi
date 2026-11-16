@@ -75,6 +75,12 @@ async function saveRecord(
 	if (save === undefined) {
 		return refused("the memvidkb backend exposes no save(); nothing was sent, queued, or stored locally.");
 	}
+	// No capture sends `importance`, and neither capture type above has such a field —
+	// deliberately, not by omission. `RememberRequest` documents no field for it, so the
+	// backend answers a defined value with "Not sent — the route documents no field for
+	// it: importance." instead of storing it; and the file sink never read it either
+	// (`saveLearnedLesson` only normalizes it through). Leaving it out keeps a result
+	// `message` reserved for real refusals rather than a field no route can carry.
 	return save({ agentDir, cwd }, normalized);
 }
 
