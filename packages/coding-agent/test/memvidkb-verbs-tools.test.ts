@@ -537,4 +537,28 @@ describe("memory tools route to the knowledge service", () => {
 		expect(requests).toHaveLength(0);
 		expect(findNamed(temp.path(), "learned.md")).toEqual([]);
 	});
+
+	it("never teaches a knowledge:// URI that the resolver would reject", async () => {
+		// `src/internal-urls/knowledge-protocol.ts` parses only
+		// `knowledge://record/<context>/<track>/<record-id>` and
+		// `knowledge://track/<context>/<track>`; any other spelling answers
+		// `invalid_knowledge_uri`. Nothing behavioural can catch a malformed one — the
+		// agent just gets a refusal after following the instructions — so every surface
+		// that mentions the scheme is pinned here, source and docs alike.
+		// The shape rejected is the scheme followed by a placeholder: a documented
+		// generic reference to the scheme (`` `knowledge://` reader ``) is prose, not a
+		// taught URI, so it stays legal.
+		const surfaces: Record<string, string> = {
+			"memory-list prompt": await Bun.file(new URL("../src/prompts/tools/memory-list.md", import.meta.url)).text(),
+			"memory-list doc": await Bun.file(new URL("../../../docs/tools/memory-list.md", import.meta.url)).text(),
+			"memvidkb backend": await Bun.file(new URL("../src/memvidkb/backend.ts", import.meta.url)).text(),
+		};
+		for (const [name, text] of Object.entries(surfaces)) {
+			// `\x3c` rather than the literal character: the placeholder is what a
+			// hand-written URI starts with, and an escape keeps this file independent of
+			// any tool that rewrites angle brackets in transit.
+			const malformed = text.match(/knowledge:\/\/(?!record\/|track\/)\x3c/g) ?? [];
+			expect(malformed, `${name} teaches only resolvable knowledge URIs`).toEqual([]);
+		}
+	});
 });

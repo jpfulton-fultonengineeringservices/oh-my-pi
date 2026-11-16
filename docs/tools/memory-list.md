@@ -23,7 +23,7 @@ Sends `GET /api/v1/tracks/{track}/records?limit=…&offset=…&order=desc` again
 
 Reads need the track to be reachable but **not** `consent.remember` — the two consent gates are separate by design. `consent.remember = "off"` blocks writes (`retain`, `learn`, `memory_edit`) and leaves this listing working, so an agent can always inspect what it is holding.
 
-Rows carry identity and provenance, not full text: `id`, `captured=`, `verified=`, `origin=`, and optionally `title=`, `tags=`, `supersededBy=`, followed by a clipped preview. A preview ending in `…` is truncated — pull the whole record with `recall` or `read knowledge://<context>/<track>/<id>`.
+Rows carry identity and provenance, not full text: `id`, `captured=`, `verified=`, `origin=`, and optionally `title=`, `tags=`, `supersededBy=`, followed by a clipped preview. A preview ending in `…` is truncated — pull the whole record with `recall` or `read knowledge://record/<context>/<track>/<id>`.
 
 ## Output
 
