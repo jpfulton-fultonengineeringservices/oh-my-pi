@@ -92,6 +92,49 @@ export const RECORD_PAGE = {
 	offset: "number",
 } as const satisfies FieldShape;
 
+/**
+ * One full record from `GET /memories/{track}/records/{record_id}` (`RecordResponse`,
+ * `src/api/records/dto.rs:100-126`). The only response that carries `text`: the listing
+ * route deliberately serves a clipped snippet instead.
+ */
+export const RECORD_DETAIL = {
+	id: "string",
+	track: "string",
+	uri: "string",
+	title: "optstring",
+	tags: "strings",
+	text: "string",
+	originActor: "string",
+	capturedAt: "string",
+	lastVerifiedAt: "optstring",
+	derivedFrom: "optstring",
+	supersededBy: "optstring",
+} as const satisfies FieldShape;
+
+/**
+ * `POST /memories/{track}/records/{record_id}/supersede` answer (`SupersedeResponse`,
+ * `src/api/records/dto.rs:188-200`). Both ids and both URIs come back so the caller can
+ * say which record was replaced and which one now stands, without a second read.
+ */
+export const SUPERSEDE_RESPONSE = {
+	priorId: "string",
+	newId: "string",
+	priorUri: "string",
+	newUri: "string",
+} as const satisfies FieldShape;
+
+/**
+ * `POST /memories/{track}/erase` answer (`EraseReport`, `src/api/documents.rs:46-51`).
+ * `residualFrames` carries every frame whose delete was attempted and failed, so a
+ * zero-count report can never be read as a completed deletion. There is deliberately no
+ * card count: the pinned `memvid-core` exposes no selective card delete.
+ */
+export const ERASE_REPORT = {
+	framesRemoved: "number",
+	chunksRemoved: "number",
+	residualFrames: "strings",
+} as const satisfies FieldShape;
+
 /** One hit of a find page. */
 export type FindResultItem = Shaped<typeof FIND_RESULT>;
 
@@ -106,6 +149,15 @@ export type RecordListItem = Shaped<typeof RECORD_LIST_ITEM>;
 
 /** The paging fields of the bounded record listing. */
 export type RecordPageFields = Shaped<typeof RECORD_PAGE>;
+
+/** One full record, text and all provenance fields included. */
+export type RecordDetail = Shaped<typeof RECORD_DETAIL>;
+
+/** What a supersede call reports about the pair it swapped. */
+export type SupersedeResponse = Shaped<typeof SUPERSEDE_RESPONSE>;
+
+/** What an erase call actually removed, per the service's own accounting. */
+export type EraseReport = Shaped<typeof ERASE_REPORT>;
 
 /** Modes `POST /memories/{id}/find` accepts (`SearchMode`, `src/search.rs:32-44`, snake_case). */
 export const FIND_MODES = ["lexical", "semantic", "hybrid", "temporal"] as const;

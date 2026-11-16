@@ -9,10 +9,13 @@
  * (`./config`).
  *
  * Scope is deliberately the backend surface, not the whole protocol: reads go through
- * `POST /memories/{track}/find`, writes through `POST /memories/{track}/records`, status
- * through `GET /healthz`, and `/memory stats` through `GET /memories/{track}/records`.
- * The write is synchronous — there is no outbox and no local queue, so a failed write is
- * reported failed and never counted as stored.
+ * `POST /memories/{track}/find`, writes through `POST /memories/{track}/records`, an
+ * inventory through `GET /memories/{track}/records`, one record's full text through
+ * `GET /memories/{track}/records/{record_id}`, a correction through
+ * `POST /memories/{track}/records/{record_id}/supersede`, a deletion through
+ * `POST /memories/{track}/erase`, and status through `GET /healthz`. Every write is
+ * synchronous — there is no outbox and no local queue, so a failed write is reported
+ * failed and never counted as stored, deleted, or superseded.
  *
  * The service owns the memory, so there is no per-session state here: `start()` only
  * reports a misconfiguration, `clear()` refuses to wipe central state the service exposes
@@ -21,12 +24,26 @@
  */
 
 import { logger } from "@oh-my-pi/pi-utils";
-import { findTrack, health, listRecords, rememberRecord, type MemvidkbOutcome } from "./client";
+import {
+	eraseDocument,
+	findTrack,
+	health,
+	inspectRecord,
+	listRecords,
+	rememberRecord,
+	supersedeRecord,
+	type MemvidkbOutcome,
+} from "./client";
 import { loadMemvidkbBackendConfig, selectDefaultTrack, type MemvidkbBackendConfig } from "./config";
 import { KNOWLEDGE_ERROR_PREFIX } from "./errors";
 import type { RecordListing } from "./dto";
 import type {
 	MemoryBackend,
+	MemoryBackendEditInput,
+	MemoryBackendEditResult,
+	MemoryBackendListItem,
+	MemoryBackendListOptions,
+	MemoryBackendListResult,
 	MemoryBackendOperationContext,
 	MemoryBackendSaveInput,
 	MemoryBackendSaveResult,
@@ -42,6 +59,13 @@ const STATS_PREVIEW_LIMIT = 5;
 
 /** A search asking for more than this is clipped: a recall dump is not the point. */
 const MAX_SEARCH_LIMIT = 50;
+
+/**
+ * Rows one inventory read returns at most, matching the service's own
+ * `MAX_RECORD_LIMIT` (`src/api/records/dto.rs:14`). A request above it is clipped rather
+ * than rejected, because the service would clip it too and a refusal would be noise.
+ */
+const MAX_LIST_LIMIT = 200;
 
 /** A frame's `timestamp` is Unix seconds, and `0` is the service's "no createdAt" value. */
 const NO_TIMESTAMP = 0;
@@ -94,6 +118,15 @@ function searchFailure(query: string, error: string): MemoryBackendSearchResult 
 
 function saveFailure(error: string): MemoryBackendSaveResult {
 	return { backend: "memvidkb", stored: 0, ids: [], message: error };
+}
+
+function listFailure(error: string): MemoryBackendListResult {
+	// Same discipline as a failed search: an outage is never rendered as an empty track.
+	return { backend: "memvidkb", count: 0, items: [], message: error };
+}
+
+function editFailure(message: string): MemoryBackendEditResult {
+	return { backend: "memvidkb", status: "failed", message };
 }
 
 /** Markdown for the system-prompt append section: what is where, and what this session may write. */
@@ -342,6 +375,136 @@ export const memvidkbBackend: MemoryBackend = {
 			stored: 1,
 			ids: [stored.data.id],
 			message: `Stored as ${originActor}. Not sent — the route documents no field for it: importance.`,
+		};
+	},
+
+	async list(
+		context: MemoryBackendOperationContext,
+		options?: MemoryBackendListOptions,
+	): Promise<MemoryBackendListResult> {
+		const loaded = await loadMemvidkbBackendConfig(context.cwd);
+		if (!loaded.ok) return listFailure(loaded.error);
+		const config = loaded.config;
+		// Listing is a read: `remember: "off"` refuses writes and must not blind this verb.
+		// What a read does need is a track this context is permitted to see.
+		const track = selectDefaultTrack(config);
+		if (!track.ok) return listFailure(track.error);
+
+		const limit =
+			options?.limit === undefined ? undefined : Math.max(1, Math.min(MAX_LIST_LIMIT, Math.trunc(options.limit)));
+		const offset = options?.offset === undefined ? undefined : Math.max(0, Math.trunc(options.offset));
+		const found = await listRecords(config, { track: track.value, limit, offset }, options?.signal);
+		if (!found.ok) return listFailure(found.error);
+
+		const page = found.data;
+		const items: MemoryBackendListItem[] = page.records.map(record => ({
+			id: record.id,
+			source: record.uri,
+			title: record.title,
+			tags: record.tags,
+			originActor: record.originActor,
+			capturedAt: record.capturedAt,
+			lastVerifiedAt: record.lastVerifiedAt,
+			supersededBy: record.supersededBy,
+			preview: record.textSnippet,
+		}));
+		return {
+			backend: "memvidkb",
+			scope: page.track,
+			count: items.length,
+			total: page.total,
+			offset: page.offset,
+			items,
+		};
+	},
+
+	async edit(context: MemoryBackendOperationContext, input: MemoryBackendEditInput): Promise<MemoryBackendEditResult> {
+		const loaded = await loadMemvidkbBackendConfig(context.cwd);
+		if (!loaded.ok) return editFailure(loaded.error);
+		const config = loaded.config;
+		// Every op here mutates central state, so all three sit behind the same consent a
+		// `save` needs — a context that may not write may not delete or rewrite either.
+		if (config.remember !== "on") {
+			return {
+				backend: "memvidkb",
+				status: "unsupported",
+				message: `${KNOWLEDGE_ERROR_PREFIX.forbidden}Central edits are not permitted for context "${config.context}": .memvidkb sets remember to "off". Nothing was sent.`,
+			};
+		}
+		const track = selectDefaultTrack(config);
+		if (!track.ok) return editFailure(track.error);
+		const id = input.id.trim();
+		if (id.length === 0) {
+			return {
+				backend: "memvidkb",
+				status: "failed",
+				message: `${KNOWLEDGE_ERROR_PREFIX.unavailable}edit refused the request before sending it: id was empty; nothing was sent`,
+			};
+		}
+
+		if (input.op === "invalidate") {
+			// The service has no soft-invalidate route and no `valid_until` on a record: the
+			// honest answer is that this op does not exist here, not a write that merely
+			// looks like one. `update` supersedes with corrected text; `forget` deletes.
+			return {
+				backend: "memvidkb",
+				status: "unsupported",
+				message:
+					`memvid-kb has no soft-invalidate route, so record ${id} is unchanged. ` +
+					"Use `update` to supersede it with corrected content, or `forget` to erase it.",
+			};
+		}
+
+		if (input.op === "update") {
+			const content = input.content?.trim() ?? "";
+			if (content.length === 0) {
+				return {
+					backend: "memvidkb",
+					status: "failed",
+					message: `${KNOWLEDGE_ERROR_PREFIX.unavailable}edit refused the request before sending it: update requires content; nothing was sent`,
+				};
+			}
+			const swapped = await supersedeRecord(config, {
+				track: track.value,
+				recordId: id,
+				content,
+				originActor: originActorFor(config, { content, source: "coding-agent-memory-edit" }),
+			});
+			if (!swapped.ok) return editFailure(swapped.error);
+			return {
+				backend: "memvidkb",
+				status: "updated",
+				message: `Record ${swapped.data.priorId} was superseded by ${swapped.data.newId}.`,
+			};
+		}
+
+		// Erase is addressed by `sourceUri`, which the caller does not have: resolve the id
+		// to its uri first, and refuse to delete anything if that read fails.
+		const current = await inspectRecord(config, { track: track.value, recordId: id });
+		if (!current.ok) return editFailure(current.error);
+		const erased = await eraseDocument(config, { track: track.value, sourceUri: current.data.uri });
+		if (!erased.ok) return editFailure(erased.error);
+		const report = erased.data;
+		if (report.residualFrames.length > 0) {
+			return {
+				backend: "memvidkb",
+				status: "failed",
+				message:
+					`Erase of ${current.data.uri} was incomplete: ${String(report.framesRemoved)} frame(s) and ` +
+					`${String(report.chunksRemoved)} chunk(s) removed, but these remain: ${report.residualFrames.join(", ")}.`,
+			};
+		}
+		if (report.framesRemoved === 0 && report.chunksRemoved === 0) {
+			return {
+				backend: "memvidkb",
+				status: "not_found",
+				message: `Nothing was deleted: the service removed 0 frames for ${current.data.uri}.`,
+			};
+		}
+		return {
+			backend: "memvidkb",
+			status: "forgotten",
+			message: `Record ${id} erased: ${String(report.framesRemoved)} frame(s) and ${String(report.chunksRemoved)} chunk(s) removed.`,
 		};
 	},
 

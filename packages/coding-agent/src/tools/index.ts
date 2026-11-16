@@ -66,6 +66,7 @@ import { FindTool, isFindEnabled } from "./jfind";
 import { LearnTool } from "./learn";
 import { ManageSkillTool } from "./manage-skill";
 import { MemoryEditTool } from "./memory-edit";
+import { MemoryListTool } from "./memory-list";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
@@ -145,6 +146,7 @@ export * from "./image-gen";
 export * from "./learn";
 export * from "./manage-skill";
 export * from "./memory-edit";
+export * from "./memory-list";
 export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
@@ -621,6 +623,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
 	memory_edit: MemoryEditTool.createIf,
+	memory_list: MemoryListTool.createIf,
 	retain: MemoryRetainTool.createIf,
 	recall: MemoryRecallTool.createIf,
 	reflect: MemoryReflectTool.createIf,
@@ -745,13 +748,19 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		) {
 			requestedTools.push("ast_edit");
 		}
-		if (["hindsight", "mnemopi"].includes(cfgMemoryBackend.get(session.settings))) {
+		if (["hindsight", "mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings))) {
 			for (const name of ["recall", "retain", "reflect"]) {
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
-		if (cfgMemoryBackend.get(session.settings) === "mnemopi" && !requestedTools.includes("memory_edit")) {
+		if (
+			["mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings)) &&
+			!requestedTools.includes("memory_edit")
+		) {
 			requestedTools.push("memory_edit");
+		}
+		if (cfgMemoryBackend.get(session.settings) === "memvidkb" && !requestedTools.includes("memory_list")) {
+			requestedTools.push("memory_list");
 		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
 			requestedTools.push("think");
@@ -765,7 +774,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		if (cfgAutolearnEnabled.get(session.settings) && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
 			if (
-				["hindsight", "mnemopi", "local"].includes(cfgMemoryBackend.get(session.settings)) &&
+				["hindsight", "mnemopi", "local", "memvidkb"].includes(cfgMemoryBackend.get(session.settings)) &&
 				!requestedTools.includes("learn")
 			) {
 				requestedTools.push("learn");
@@ -818,9 +827,12 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			);
 		}
 		if (name === "retain" || name === "recall" || name === "reflect") {
-			return ["hindsight", "mnemopi"].includes(cfgMemoryBackend.get(session.settings));
+			return ["hindsight", "mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings));
 		}
-		if (name === "memory_edit") return cfgMemoryBackend.get(session.settings) === "mnemopi";
+		if (name === "memory_edit") {
+			return ["mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings));
+		}
+		if (name === "memory_list") return cfgMemoryBackend.get(session.settings) === "memvidkb";
 		if (name === "manage_skill")
 			return (
 				cfgAutolearnEnabled.get(session.settings) &&
@@ -830,7 +842,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			return (
 				cfgAutolearnEnabled.get(session.settings) &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined) &&
-				["hindsight", "mnemopi", "local"].includes(cfgMemoryBackend.get(session.settings))
+				["hindsight", "mnemopi", "local", "memvidkb"].includes(cfgMemoryBackend.get(session.settings))
 			);
 		}
 		if (name === "task") {

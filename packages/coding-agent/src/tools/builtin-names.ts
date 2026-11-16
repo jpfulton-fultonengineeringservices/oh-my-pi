@@ -31,6 +31,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"reflect",
 	"learn",
 	"manage_skill",
+	"memory_list",
 ] as const;
 
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
@@ -83,6 +84,7 @@ export const BUILTIN_TOOL_HELP: Record<BuiltinToolName, BuiltinToolHelp> = {
 	recall: { summary: "Search long-term memory", defaultState: "off" },
 	reflect: { summary: "Synthesize an answer from long-term memory", defaultState: "off" },
 	memory_edit: { summary: "Edit or forget long-term memories", defaultState: "off" },
+	memory_list: { summary: "List stored long-term memories without searching", defaultState: "off" },
 	learn: { summary: "Capture reusable lessons in long-term memory", defaultState: "off" },
 	manage_skill: { summary: "Create, update, or delete managed skills", defaultState: "off" },
 	security_scan: { summary: "Run security scans", defaultState: "off" },

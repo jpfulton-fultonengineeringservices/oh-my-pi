@@ -70,6 +70,70 @@ export interface MemoryBackendSaveResult {
 	message?: string;
 }
 
+/** Paging for an inventory read; omitted paging stays with the backend's default. */
+export interface MemoryBackendListOptions {
+	/** How many rows to return. Backends clip this to their own ceiling. */
+	limit?: number;
+	/** Rows to skip; omitted means 0. */
+	offset?: number;
+	/** Best-effort abort signal. Backends may only observe it before/after an underlying call. */
+	signal?: AbortSignal;
+}
+
+/** One inventory row: what is stored, without its full text. */
+export interface MemoryBackendListItem {
+	/** The id a later `memory_edit` addresses this row by. */
+	id: string;
+	/** The handle the backend itself uses, when it has one. */
+	source?: string;
+	/** Display title, when the backend carries one. */
+	title?: string | null;
+	/** Caller-supplied labels. */
+	tags?: readonly string[];
+	/** Who produced the row, when the backend records provenance. */
+	originActor?: string;
+	/** When the row was captured, as the backend spells it. */
+	capturedAt?: string;
+	/** When the row was last verified, `null` when never — never a fake date. */
+	lastVerifiedAt?: string | null;
+	/** The row that supersedes this one, `null` while it is current. */
+	supersededBy?: string | null;
+	/** Leading slice of the stored text; the full text needs a per-row read. */
+	preview: string;
+}
+
+/** A bounded inventory page, or a prefixed refusal naming why nothing was listed. */
+export interface MemoryBackendListResult {
+	backend: MemoryBackendId;
+	/** The scope the listing covers (a track, bank, or file), when the backend has one. */
+	scope?: string;
+	count: number;
+	/** Total rows in the scope before paging, when the backend reports it. */
+	total?: number;
+	offset?: number;
+	items: MemoryBackendListItem[];
+	message?: string;
+}
+
+/** One model-requested mutation of a single existing memory. */
+export interface MemoryBackendEditInput {
+	op: "update" | "forget" | "invalidate";
+	/** Memory id from a recall or list result. */
+	id: string;
+	/** Replacement text for `update`. */
+	content?: string;
+	/** Successor id for `invalidate`, when the backend supports soft supersession. */
+	replacementId?: string;
+}
+
+/** What one edit call did, or precisely what it refused to do. */
+export interface MemoryBackendEditResult {
+	backend: MemoryBackendId;
+	status: "updated" | "forgotten" | "invalidated" | "not_found" | "unsupported" | "failed";
+	/** Human-readable outcome, always present so the tool never has to invent one. */
+	message: string;
+}
+
 export interface MemoryBackendOperationContext {
 	agentDir: string;
 	cwd: string;
@@ -80,6 +144,8 @@ export interface MemoryRuntimeContext {
 	status(): Promise<MemoryBackendStatus>;
 	search(query: string, options?: MemoryBackendSearchOptions): Promise<MemoryBackendSearchResult>;
 	save(input: string | MemoryBackendSaveInput): Promise<MemoryBackendSaveResult>;
+	list(options?: MemoryBackendListOptions): Promise<MemoryBackendListResult>;
+	edit(input: MemoryBackendEditInput): Promise<MemoryBackendEditResult>;
 }
 
 export interface MemoryBackendStartOptions {
@@ -147,6 +213,16 @@ export interface MemoryBackend {
 
 	/** Explicit user-facing save operation. */
 	save?(context: MemoryBackendOperationContext, input: MemoryBackendSaveInput): Promise<MemoryBackendSaveResult>;
+	/**
+	 * Bounded inventory of what is stored, without full text. Optional: a backend that
+	 * has no listable store omits it and the runtime says so rather than listing nothing.
+	 */
+	list?(context: MemoryBackendOperationContext, options?: MemoryBackendListOptions): Promise<MemoryBackendListResult>;
+	/**
+	 * Mutate one existing memory by id. Optional: a backend without a per-record write
+	 * route omits it, so the tool reports the refusal instead of pretending the op ran.
+	 */
+	edit?(context: MemoryBackendOperationContext, input: MemoryBackendEditInput): Promise<MemoryBackendEditResult>;
 
 	/** Render backend-specific memory statistics as markdown (`/memory stats`). */
 	stats?(agentDir: string, cwd: string, session?: AgentSession): Promise<string | undefined>;
