@@ -21,6 +21,7 @@
  */
 
 import { asRecord, sanitizeText, stringProperty, truncate } from "@oh-my-pi/pi-utils";
+import { normalizeBearer } from "./bearer";
 import {
 	FIND_MODES,
 	FIND_PAGE,
@@ -55,8 +56,17 @@ const USER_AGENT = "omp-memvidkb-backend";
 /** Upper bound on echoed service diagnostics, so a failure stays readable and bounded. */
 const MAX_DETAIL_CHARS = 400;
 
-/** Where to call and with what bearer — the whole of what the transport needs. */
-export type MemvidkbEndpoint = { readonly baseUrl: string; readonly token: string };
+/**
+ * Where to call and with what bearer — the whole of what the transport needs.
+ *
+ * `tokenEnvVar` travels with the value so a refusal can name the variable an operator has
+ * to fix; the value itself is never included in a returned string.
+ */
+export type MemvidkbEndpoint = {
+	readonly baseUrl: string;
+	readonly tokenEnvVar: string;
+	readonly token: string;
+};
 
 /** One request against the knowledge service. */
 export type MemvidkbRequest = {
@@ -188,12 +198,17 @@ async function performCall(
 ): Promise<RawOutcome> {
 	signal?.throwIfAborted();
 	const subject = request.subject;
+	// The bearer is normalised here, at the socket, not at config load: both `.memvidkb`
+	// readers accept a whitespace-only value (the accept/reject line the deployed reader
+	// pins), so nothing may reach `fetch` without something sendable to put in the header.
+	const bearer = normalizeBearer(endpoint);
+	if (!bearer.ok) return bearer;
 	let response: Response;
 	try {
 		response = await fetch(`${endpoint.baseUrl}${request.path}`, {
 			method: request.method,
 			headers: {
-				authorization: `Bearer ${endpoint.token}`,
+				authorization: `Bearer ${bearer.value}`,
 				"content-type": "application/json",
 				"user-agent": USER_AGENT,
 			},
@@ -214,7 +229,9 @@ async function performCall(
 	if (!response.ok) {
 		return {
 			ok: false,
-			error: statusFailure(endpoint, request, subject, response.status, describeBody(raw, endpoint.token)),
+			// Scrub with the bearer that actually went out, so a service echoing it back is
+			// redacted even when the env value carried padding.
+			error: statusFailure(endpoint, request, subject, response.status, describeBody(raw, bearer.value)),
 		};
 	}
 	return { ok: true, status: response.status, raw };
@@ -236,7 +253,8 @@ async function callJson(
 	if (!outcome.ok) return outcome;
 	const parsed = parseJson(outcome.raw);
 	if (!parsed.ok) {
-		const detail = outcome.raw.trim() ? clipDetail(outcome.raw.trim(), endpoint.token) : "(empty response body)";
+		const scrub = endpoint.token.trim();
+		const detail = outcome.raw.trim() ? clipDetail(outcome.raw.trim(), scrub) : "(empty response body)";
 		return {
 			ok: false,
 			error: `${KNOWLEDGE_ERROR_PREFIX.unavailable}${request.method} ${request.path} for ${request.subject} returned a body that is not JSON (HTTP ${String(outcome.status)}): ${detail}. Refusing to report an unreadable success.`,

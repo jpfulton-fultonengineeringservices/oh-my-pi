@@ -87,15 +87,11 @@ function configParseError(error: unknown): KnowledgeConfigError {
  * The bearer token is never stored in `.memvidkb`, only the name of the variable
  * holding it. A missing or empty value is a configuration error: callers must
  * surface it, never fall back to an unauthenticated request.
- *
- * "Empty" includes whitespace-only: the deployed contract treats the bearer with
- * `nonEmptyString` semantics (trim, then require length), so a padded value is the
- * same operator mistake as a blank one and must not reach the wire as a bearer.
  */
 function withBearerCheck(loaded: KnowledgeConfigResult): KnowledgeConfigResult {
 	if ("err" in loaded) return loaded;
 	const config = loaded.ok;
-	const token = process.env[config.tokenEnvVar]?.trim();
+	const token = process.env[config.tokenEnvVar];
 	if (typeof token !== "string" || token.length === 0) {
 		return {
 			err: {

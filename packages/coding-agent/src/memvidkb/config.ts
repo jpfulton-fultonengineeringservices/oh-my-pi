@@ -12,6 +12,8 @@
  *
  * The bearer is never stored in `.memvidkb`: the document names the env var holding it,
  * and a missing or empty value is a configuration error, never an unauthenticated call.
+ * A whitespace-only value is accepted here, exactly as both readers accept it, and refused
+ * at the send boundary by `./bearer` — one accept/reject line, not one per layer.
  */
 
 import { KNOWLEDGE_ERROR_PREFIX } from "./errors";
@@ -60,13 +62,15 @@ export async function loadMemvidkbBackendConfig(cwd: string): Promise<MemvidkbBa
 		};
 	}
 	const config = loaded.ok;
-	// Trimmed, exactly as the shared reader's gate does: a padded bearer is the same
-	// operator mistake as a blank one, and the value sent must be the value gated.
-	const token = process.env[config.tokenEnvVar]?.trim();
+	// Mirrors the shared reader's gate exactly, byte for byte: unset or zero-length is the
+	// refusal, anything else (including padding) loads. Normalising here instead would give
+	// this layer its own accept/reject line, which no harness can check against the other
+	// two readers.
+	const token = process.env[config.tokenEnvVar];
 	if (typeof token !== "string" || token.length === 0) {
 		return {
 			ok: false,
-			error: `${KNOWLEDGE_ERROR_PREFIX.invalidConfig}Bearer token env var "${config.tokenEnvVar}" is unset, empty, or whitespace-only (code TOKEN_ENV_UNSET). Unauthenticated requests are never attempted.`,
+			error: `${KNOWLEDGE_ERROR_PREFIX.invalidConfig}Bearer token env var "${config.tokenEnvVar}" is unset or empty (code TOKEN_ENV_UNSET). Unauthenticated requests are never attempted.`,
 		};
 	}
 	return {

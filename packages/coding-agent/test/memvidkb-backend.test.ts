@@ -235,10 +235,12 @@ describe("memvidkb backend search", () => {
 	});
 
 	it("refuses to go unauthenticated when the bearer env var is empty, blank, or unset", async () => {
-		// All three arms are the same contract the fork's own reader enforces: never an
-		// unauthenticated request, and never a recall that quietly returns nothing. A padded
-		// bearer is the same operator mistake as a blank one — the deployed client reads the
-		// env var through `nonEmptyString`, so `Bearer    ` must never leave here.
+		// Same contract for all three arms: never an unauthenticated request, and never a
+		// recall that quietly returns nothing. Where they differ is the layer — "empty" and
+		// "unset" are refused by the loader (mirroring both readers), "blank" is accepted at
+		// load like the deployed reader accepts it and refused at the send boundary in
+		// src/memvidkb/bearer.ts. Either way nothing reaches the socket, which is what
+		// `requests` measures, and the message names the variable rather than the value.
 		for (const arm of ["empty", "blank", "unset"] as const) {
 			requests = [];
 			if (arm === "empty") process.env[TOKEN_ENV] = "";

@@ -187,13 +187,21 @@ describe("knowledge configuration", () => {
 	it("reports TOKEN_ENV_UNSET instead of falling back to an unauthenticated config", async () => {
 		await withTempDir(async dir => {
 			await writeConfig(dir, config());
-			// A whitespace-only bearer is the same operator mistake as a blank one: it must read
-			// as unset, for both readers, and never go out as `Bearer   `.
-			for (const value of [undefined, "", "   "]) {
+			// Parity with the deployed reader: only unset and empty fail at load. A
+			// whitespace-only bearer is accepted by the loader and refused at the send
+			// boundary, exactly as the config repo pins for its own reader in
+			// __tests__/knowledge-config-parity.test.ts ("loadMemvidkb('   ') -> no err,
+			// resolveKnowledgeConfig('   ') -> not ok"). A gate-level refusal here would be
+			// loader-level schema drift the parity harness cannot see, because it imports only
+			// the config repo.
+			for (const value of [undefined, ""]) {
 				setToken(value);
 				expect(loadMemvidkb(dir)).toMatchObject({ err: { code: "TOKEN_ENV_UNSET" } });
 				expect(await loadMemvidkbConfig(dir)).toMatchObject({ err: { code: "TOKEN_ENV_UNSET" } });
 			}
+			setToken("   ");
+			expect("ok" in loadMemvidkb(dir)).toBe(true);
+			expect("ok" in (await loadMemvidkbConfig(dir))).toBe(true);
 			// The bearer value never appears in the message, only the variable name.
 			setToken(TOKEN_VALUE);
 			expect("ok" in loadMemvidkb(dir)).toBe(true);
@@ -224,9 +232,9 @@ describe("KnowledgeProtocolHandler", () => {
 	});
 
 	it("sends the bearer it validated, never the padded env value", async () => {
-		// One env var, one wire value. The loader's gate accepts a padded bearer by trimming it,
-		// so the send site has to use that same trimmed value: `Bearer   tok  ` would be a
-		// different credential than the one gated, and the service would answer 401.
+		// One env var, one wire value. The loader accepts a padded bearer untouched, so the
+		// send site is what has to trim: `Bearer   tok  ` would be a different credential than
+		// the one the operator set, and the service would answer 401.
 		setToken(`   ${TOKEN_VALUE}   `);
 		await withTempDir(async dir => {
 			await writeConfig(dir, config());
@@ -705,6 +713,24 @@ describe("KnowledgeProtocolHandler", () => {
 	it("refuses with no bearer token rather than sending an unauthenticated request", async () => {
 		await withTempDir(async dir => {
 			await writeConfig(dir, config());
+			const calls = stubFetch(() => Response.json(RECORD_BODY));
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://track/work/notes"),
+				{ cwd: dir },
+			);
+			expect(calls).toHaveLength(0);
+			expect(resource.notes).toEqual(["TOKEN_ENV_UNSET"]);
+			expect(resource.content).toContain(TOKEN_ENV);
+		});
+	});
+
+	it("refuses a whitespace-only bearer at the send boundary instead of sending `Bearer   `", async () => {
+		// The loader accepts this value (parity with the deployed reader), so the only thing
+		// standing between it and the socket is the normalisation at the send site.
+		setToken("   ");
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			expect("ok" in loadMemvidkb(dir)).toBe(true);
 			const calls = stubFetch(() => Response.json(RECORD_BODY));
 			const resource = await new KnowledgeProtocolHandler().resolve(
 				parseInternalUrl("knowledge://track/work/notes"),

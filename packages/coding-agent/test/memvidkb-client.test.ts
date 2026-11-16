@@ -21,6 +21,8 @@ import {
 import { KNOWLEDGE_ERROR_PREFIX } from "../src/memvidkb/errors";
 
 const TOKEN = "kb-test-bearer-7f3a";
+/** The NAME of the variable holding `TOKEN`, so a refusal can name it the way an operator needs. */
+const TOKEN_ENV = "MEMVIDKB_CLIENT_TEST_TOKEN";
 
 type Recorded = {
 	method: string;
@@ -109,7 +111,7 @@ function defaultResponse(request: Recorded): Response {
 }
 
 function endpoint(): MemvidkbEndpoint {
-	return { baseUrl, token: TOKEN };
+	return { baseUrl, tokenEnvVar: TOKEN_ENV, token: TOKEN };
 }
 
 beforeEach(async () => {
@@ -199,8 +201,33 @@ describe("memvidkb client find", () => {
 		expect(requests).toHaveLength(0);
 	});
 
+	it("refuses a blank bearer before the socket instead of sending `Bearer   `", async () => {
+		// The `.memvidkb` readers accept this value at load (parity with the deployed reader),
+		// so the transport is the last thing that can stop it. No request may be recorded.
+		for (const blank of ["", "   ", "\t\n"]) {
+			requests = [];
+			const outcome = await findTrack({ baseUrl, tokenEnvVar: TOKEN_ENV, token: blank }, "dev", "q");
+			expect(outcome.ok, `bearer ${JSON.stringify(blank)} must be refused`).toBe(false);
+			if (outcome.ok) return;
+			expect(outcome.error.startsWith(KNOWLEDGE_ERROR_PREFIX.invalidConfig)).toBe(true);
+			expect(outcome.error).toContain(TOKEN_ENV);
+			expect(outcome.error).toContain("TOKEN_ENV_UNSET");
+			expect(requests).toHaveLength(0);
+		}
+	});
+
+	it("sends the trimmed bearer, never the padded env value", async () => {
+		// One env var, one wire value: the readers hand the padding down untouched, so the
+		// header has to carry the trimmed credential the service will accept.
+		const outcome = await findTrack({ baseUrl, tokenEnvVar: TOKEN_ENV, token: `  ${TOKEN}  ` }, "dev", "q");
+		expect(outcome.ok).toBe(true);
+		expect(requests).toHaveLength(1);
+		expect(requests[0]?.authorization).toBe(`Bearer ${TOKEN}`);
+		expect(requests[0]?.authorization).not.toContain("  ");
+	});
+
 	it("reports a transport failure as an outage, never as zero results", async () => {
-		const outcome = await findTrack({ baseUrl: closedPortBaseUrl, token: TOKEN }, "dev", "q");
+		const outcome = await findTrack({ baseUrl: closedPortBaseUrl, tokenEnvVar: TOKEN_ENV, token: TOKEN }, "dev", "q");
 		expect(outcome.ok).toBe(false);
 		if (outcome.ok) return;
 		expect(outcome.error.startsWith(KNOWLEDGE_ERROR_PREFIX.unreachable)).toBe(true);

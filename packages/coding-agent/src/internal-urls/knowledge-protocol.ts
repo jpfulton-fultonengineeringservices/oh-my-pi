@@ -84,9 +84,13 @@ export class KnowledgeProtocolHandler implements ProtocolHandler {
 			);
 		}
 
-		// The value sent is the value gated: the loader's gate trims (nonEmptyString semantics,
-		// as the deployed reader does), so a padded-but-valid bearer must go out trimmed here
-		// too, or one env var yields two different credentials inside one package.
+		// This is the bearer's single normaliser. The loader's gate only rejects an unset or
+		// zero-length value (that is the accept/reject line the config repo's
+		// __tests__/knowledge-config-parity.test.ts pins for its own reader), so padding is
+		// still on the string here and the bytes that go out must be the trimmed ones: the
+		// deployed reader sends `Bearer ${nonEmptyString(token)}`. Trimming first also means a
+		// whitespace-only value falls through to the refusal below instead of reaching the
+		// socket as `Bearer   `.
 		const token = process.env[config.tokenEnvVar]?.trim();
 		if (!token) {
 			return refusal(

@@ -147,7 +147,7 @@ function findBody(): unknown {
 }
 
 function endpoint(): MemvidkbEndpoint {
-	return { baseUrl, token: TOKEN };
+	return { baseUrl, tokenEnvVar: "MEMVIDKB_PARITY_TEST_TOKEN", token: TOKEN };
 }
 
 beforeEach(async () => {
