@@ -1,6 +1,6 @@
 # memory_list
 
-Lists what long-term memory actually holds — a bounded inventory page, newest first, with no query involved.
+Lists what long-term memory actually holds — a bounded inventory page with no query involved. Rows arrive in the order the service returns them; the client sends no ordering parameter.
 
 `recall` answers a question about memory; `memory_list` answers "what is in there". Reach for it when you need a record's id, want to confirm a `retain` landed before writing it again, or are auditing who captured what and when.
 
@@ -19,7 +19,7 @@ Like the rest of the memory tools it is `defaultState: "off"` in `BUILTIN_TOOL_H
 
 ## Behaviour
 
-Sends `GET /api/v1/tracks/{track}/records?limit=…&offset=…&order=desc` against the knowledge service, where `{track}` is resolved from the `tracks` table in `.memvidkb`. Only reads are issued: no `POST`, no body.
+Sends `GET /memories/{track}/records?limit=…&offset=…` against the knowledge service — the route is `GET|POST {id}/records` at `agents/memvid-kb-rs/src/lib.rs:156-159` — where `{track}` is resolved from the `tracks` table in `.memvidkb`. Only `limit` and `offset` go on the wire; the response is the `RecordListResponse` `{track,total,limit,offset,results}` envelope. Only reads are issued: no `POST`, no body.
 
 Reads need the track to be reachable but **not** `consent.remember` — the two consent gates are separate by design. `consent.remember = "off"` blocks writes (`retain`, `learn`, `memory_edit`) and leaves this listing working, so an agent can always inspect what it is holding.
 
