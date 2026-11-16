@@ -291,6 +291,30 @@ describe("memvidkb client find", () => {
 		expect(outcome.error).not.toContain(TOKEN);
 		expect(outcome.error).toContain("[redacted]");
 	});
+
+	it("scrubs the padded bearer out of an echoed service body", async () => {
+		// `redactToken` splits on the literal it is handed, so scrubbing has to use the value
+		// that actually went out: fed the raw padded env value instead, the echo below would
+		// survive redaction and carry the bearer into model-visible refusal text.
+		respond = () => new Response(`rejected ${TOKEN}`, { status: 400 });
+		const outcome = await findTrack({ baseUrl, tokenEnvVar: TOKEN_ENV, token: `  ${TOKEN}  ` }, "dev", "q");
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error).not.toContain(TOKEN);
+		expect(outcome.error).toContain("[redacted]");
+	});
+
+	it("scrubs the padded bearer out of a non-JSON success body", async () => {
+		// The other scrub site: an unreadable 2xx body is clipped, not envelope-rendered, so
+		// this arm pins that path too — same padded env value, same echo of the sent value.
+		respond = () => new Response(`unreadable body carried ${TOKEN}`, { status: 200 });
+		const outcome = await findTrack({ baseUrl, tokenEnvVar: TOKEN_ENV, token: `  ${TOKEN}  ` }, "dev", "q");
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error).toContain("not JSON");
+		expect(outcome.error).not.toContain(TOKEN);
+		expect(outcome.error).toContain("[redacted]");
+	});
 });
 
 describe("memvidkb client records", () => {
