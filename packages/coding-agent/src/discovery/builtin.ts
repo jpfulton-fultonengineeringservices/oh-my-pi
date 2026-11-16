@@ -4,7 +4,14 @@
  * Primary provider for OMP native configs. Supports all capabilities.
  */
 import * as path from "node:path";
-import { getAgentDir, logger, normalizePathForComparison, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
+import {
+	getAgentDir,
+	getConfigDirName,
+	logger,
+	normalizePathForComparison,
+	parseFrontmatter,
+	tryParseJson,
+} from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { getManagedSkillsDir, MANAGED_SKILLS_PROVIDER_ID } from "../autolearn/managed-skills";
 import { registerProvider } from "../capability";
@@ -31,9 +38,11 @@ import {
 	expandEnvVarsDeep,
 	getExtensionNameFromPath,
 	getProjectDiscoveryCeilings,
+	isAgentDirUnderHomeConfigRoot,
 	isForeignUserConfigRoot,
 	isUserConfigRoot,
 	loadFilesFromDir,
+	MAX_SKILL_NESTING_DEPTH,
 	parseRequestIdFormat,
 	SOURCE_PATHS,
 	scanSkillsFromDir,
@@ -317,19 +326,41 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 				providerId: PROVIDER_ID,
 				level: "project",
 				requireDescription: true,
+				maxDepth: MAX_SKILL_NESTING_DEPTH,
 			}),
 		);
 	}
 
-	// User-level scan from ~/.omp/agent/skills/
-	const userScan = scanSkillsFromDir(ctx, {
-		dir: path.join(getAgentDir(), "skills"),
-		providerId: PROVIDER_ID,
-		level: "user",
-		requireDescription: true,
-	});
+	// User-level scan from ~/.omp/agent/skills/ (the active profile's agent dir).
+	const userScans: Promise<LoadResult<Skill>>[] = [
+		scanSkillsFromDir(ctx, {
+			dir: path.join(getAgentDir(), "skills"),
+			providerId: PROVIDER_ID,
+			level: "user",
+			requireDescription: true,
+			maxDepth: MAX_SKILL_NESTING_DEPTH,
+		}),
+	];
 
-	const results = await Promise.all([...projectScans, userScan]);
+	// Profile-independent user skills: `~/.omp/skills`, shared by every profile
+	// (`getBaseConfigRoot()` is the same directory). It counts as a root only while
+	// `~/.omp` is the active layout — see isAgentDirUnderHomeConfigRoot. Scanned
+	// after the agent-dir root so a profile-specific skill of the same name wins
+	// the first-wins name dedup.
+	const homeConfigRoot = path.join(ctx.home, getConfigDirName());
+	if (isAgentDirUnderHomeConfigRoot(ctx.home, ctx.agentDir ?? getAgentDir())) {
+		userScans.push(
+			scanSkillsFromDir(ctx, {
+				dir: path.join(homeConfigRoot, "skills"),
+				providerId: PROVIDER_ID,
+				level: "user",
+				requireDescription: true,
+				maxDepth: MAX_SKILL_NESTING_DEPTH,
+			}),
+		);
+	}
+
+	const results = await Promise.all([...projectScans, ...userScans]);
 	return {
 		items: results.flatMap(r => r.items),
 		warnings: results.flatMap(r => r.warnings ?? []),
@@ -347,6 +378,7 @@ async function loadManagedSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		providerId: MANAGED_SKILLS_PROVIDER_ID,
 		level: "user",
 		requireDescription: true,
+		maxDepth: MAX_SKILL_NESTING_DEPTH,
 	});
 }
 
