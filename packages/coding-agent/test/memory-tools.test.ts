@@ -17,6 +17,11 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { createMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend";
+import {
+	RETIRED_MEMORY_BACKENDS,
+	retiredMemoryBackendMessage,
+} from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
 import { loadMnemopiConfig, type MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -2371,5 +2376,42 @@ describe("reflect.execute (Mnemopi backend)", () => {
 		await expect(tool.execute("call-mnemopi-reflect-no-state", { query: "anything" })).rejects.toThrow(
 			/not initialised/i,
 		);
+	});
+});
+
+describe("memory.backend retirement", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("mounts the memvidkb memory tools for a session that never chose a backend", () => {
+		// The retirement made the knowledge service the default, so a session with no
+		// `memory.backend` gets the KB verbs rather than no memory tools at all. This is
+		// the whole effect of the default flip on the tool surface: revert the default and
+		// `memory_list` disappears here.
+		expect(MemoryListTool.createIf(makeSession(Settings.isolated({})))).toBeInstanceOf(MemoryListTool);
+		// ...and `off` is still an explicit opt-out, not an absent default.
+		expect(MemoryListTool.createIf(makeSession(Settings.isolated({ "memory.backend": "off" })))).toBeNull();
+	});
+
+	it("refuses retired backends through the shared memory runtime the tools and /memory use", async () => {
+		// Tool factories gate on the raw setting and stay settings-driven; the selector is
+		// what retires a backend. A retired selection must therefore fail at the shared
+		// runtime entry point rather than report an empty `off` backend, which a caller
+		// would read as "the memory is empty" instead of "your config names a retired path".
+		for (const retired of RETIRED_MEMORY_BACKENDS) {
+			const memory = createMemoryRuntimeContext({
+				agentDir: "/tmp/agent",
+				cwd: "/tmp/project",
+				session: { settings: Settings.isolated({ "memory.backend": retired }) } as never,
+			});
+			const expected = retiredMemoryBackendMessage(retired);
+			await expect(memory.status()).rejects.toThrow(expected);
+			await expect(memory.list()).rejects.toThrow(expected);
+		}
 	});
 });
