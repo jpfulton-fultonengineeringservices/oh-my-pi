@@ -34,7 +34,7 @@ Switching backends mid-session immediately replaces the live backend, memory too
 
 ### Retired backends
 
-`local`, `hindsight`, `mnemopi`, and `sharpshooter` are retired. The selector refuses a retired id with an error naming what replaced it rather than falling back to a different store, and the settings panel no longer offers them. A config left on a retired id runs no memory backend until it is changed:
+`local`, `hindsight`, `mnemopi`, and `sharpshooter` are retired. The selector refuses a retired id with an error naming what replaced it rather than falling back to a different store, and the settings panel no longer offers them. A session started from a config left on a retired id fails to start with that error, so the operator is told to change the setting instead of silently running a different store:
 
 ```yaml
 memory:
@@ -52,4 +52,4 @@ The retired implementations and their settings namespaces are still in the tree,
 
 ### `memories.enabled`
 
-`memories.enabled` is accepted only as a migration input; `memory.backend` is the sole runtime selector. `memories.enabled: true` used to select `local`, so it now migrates to `off` and logs a one-time startup notice naming the retired ids — switching on a network knowledge service nobody asked for is not the migration's to make. Set `memory.backend` to choose a backend.
+`memories.enabled` is accepted only as a migration input; `memory.backend` is the sole runtime selector. `memories.enabled: true` used to select `local`, so it now migrates to `off` and logs a startup notice naming the retired ids — switching on a network knowledge service nobody asked for is not the migration's to make. Migration does not rewrite the config by itself; the first time any other setting is saved, the migrated value is written with it. Until one of those happens the notice repeats at each launch.
