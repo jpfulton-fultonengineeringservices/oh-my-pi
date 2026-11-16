@@ -7,8 +7,8 @@
  * third would let the schema drift silently between them — the drift the config repo's
  * `__tests__/knowledge-config-parity.test.ts` exists to catch. Only keys that already
  * exist there are read: `context`, `baseUrl`, `tokenEnvVar`, `tracks`, `remember`,
- * `recallMaxBytes`. A new key must land in both readers and that parity test in one
- * change, so nothing here invents one.
+ * `injectRecall`, `recallMaxBytes`. A new key must land in both readers and that parity
+ * test in one change, so nothing here invents one.
  *
  * The bearer is never stored in `.memvidkb`: the document names the env var holding it,
  * and a missing or empty value is a configuration error, never an unauthenticated call.
@@ -33,6 +33,12 @@ export interface MemvidkbBackendConfig {
 	tracks: readonly string[];
 	/** Whether explicit writes are permitted at all. */
 	remember: "off" | "on";
+	/**
+	 * Whether recall may reach a model unprompted. Gates the two automatic recall
+	 * paths (`beforeAgentStartPrompt`, `preCompactionContext`); an explicit
+	 * `memory_search` is a model-requested read and is never gated by it.
+	 */
+	injectRecall: boolean;
 	/** Byte ceiling for automatically injected recall, enforced by the injecting layer. */
 	recallMaxBytes: number;
 }
@@ -82,6 +88,7 @@ export async function loadMemvidkbBackendConfig(cwd: string): Promise<MemvidkbBa
 			context: config.context,
 			tracks: config.tracks,
 			remember: config.remember,
+			injectRecall: config.injectRecall,
 			recallMaxBytes: config.recallMaxBytes,
 		},
 	};
