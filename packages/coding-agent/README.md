@@ -25,21 +25,31 @@ Replay retains up to 20,000 records, 2 MiB output and 8 MiB payload; evictions a
 
 ## Memory backends
 
-The agent supports three mutually-exclusive memory backends, selected via the `memory.backend` setting (Settings → Memory tab, or `~/.omp/config.yml`):
+Memory is selected by one setting, `memory.backend` (Settings → Memory tab, or `~/.omp/config.yml`). Two values are selectable:
 
-- `off` (default) — no memory subsystem runs.
-- `local` — existing rollout-summarisation pipeline; writes `memory_summary.md` and consolidated artifacts under the agent dir.
-- `hindsight` — talks to a [Hindsight](https://hindsight.vectorize.io) server (Cloud or self-hosted Docker), retains transcripts every Nth user turn, recalls memories on the first turn of a session, and exposes `retain`, `recall`, and `reflect`.
+- `memvidkb` (default) — the central memvid-kb-rs knowledge service, addressed through the workspace's `.memvidkb` (endpoint plus bearer token). Nothing is contacted until that file resolves, so an embedder never reaches a knowledge service it did not opt into.
+- `off` — no memory subsystem runs.
 
-### Hindsight quickstart
+Switching backends mid-session immediately replaces the live backend, memory tools, listeners, and system-prompt context.
 
-1. Run a Hindsight server (Cloud or `docker run -p 8888:8888 ghcr.io/vectorize-io/hindsight:latest`).
-2. Set `memory.backend = "hindsight"` and `hindsight.apiUrl = "http://localhost:8888"` (or your Cloud URL).
-3. Optional environment overrides (env wins over settings):
-   - `HINDSIGHT_API_URL`, `HINDSIGHT_API_TOKEN` — connection
-   - `HINDSIGHT_BANK_ID`, `HINDSIGHT_DYNAMIC_BANK_ID`, `HINDSIGHT_AGENT_NAME` — bank addressing
-   - `HINDSIGHT_AUTO_RECALL`, `HINDSIGHT_AUTO_RETAIN`, `HINDSIGHT_RETAIN_MODE` — lifecycle
-   - `HINDSIGHT_RECALL_BUDGET`, `HINDSIGHT_RECALL_MAX_TOKENS` — recall sizing
-   - `HINDSIGHT_BANK_MISSION`, `HINDSIGHT_DEBUG`
+### Retired backends
 
-Switching backends mid-session immediately replaces the live backend, memory tools, listeners, and system-prompt context. Existing users with `memories.enabled = true|false` are migrated to `memory.backend = "local"|"off"` exactly once on first launch; afterward, `memory.backend` is the sole runtime selector.
+`local`, `hindsight`, `mnemopi`, and `sharpshooter` are retired. The selector refuses a retired id with an error naming what replaced it rather than falling back to a different store, and the settings panel no longer offers them. A config left on a retired id runs no memory backend until it is changed:
+
+```yaml
+memory:
+  backend: memvidkb # or "off"
+```
+
+| Retired id     | Replaced by                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------ |
+| `local`        | memvid-kb-rs knowledge service; was the local `memory_summary.md` rollout-summarisation pipeline             |
+| `hindsight`    | memvid-kb-rs knowledge service; nothing is deleted server-side, but omp no longer talks to Hindsight         |
+| `mnemopi`      | memvid-kb-rs knowledge service; was the local Mnemopi SQLite store (formerly `mnemosyne`)                     |
+| `sharpshooter` | memvid-kb-rs knowledge service; was the friction-gated project-decision store                                 |
+
+The retired implementations and their settings namespaces are still in the tree, pending a separate removal; they are unreachable through the selector, the settings panel, and the memory tools.
+
+### `memories.enabled`
+
+`memories.enabled` is accepted only as a migration input; `memory.backend` is the sole runtime selector. `memories.enabled: true` used to select `local`, so it now migrates to `off` and logs a one-time startup notice naming the retired ids — switching on a network knowledge service nobody asked for is not the migration's to make. Set `memory.backend` to choose a backend.

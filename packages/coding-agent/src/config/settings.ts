@@ -37,6 +37,7 @@ import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
+import { RETIRED_MEMORY_BACKENDS } from "../memory-backend/settings";
 import { AgentStorage, type AgentStorageApi } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { writeFileAtomically } from "../utils/atomic-file";
@@ -447,6 +448,36 @@ function stringArrayFromUnknown(value: unknown): string[] {
 }
 
 /**
+ * Shared tail of every retired-memory-backend migration notice: what is retired and what to set instead.
+ * Kept in one place so the two notices cannot drift apart on the part an operator acts on.
+ */
+const RETIRED_MEMORY_BACKEND_HINT =
+	`Retired memory backends: ${RETIRED_MEMORY_BACKENDS.join(", ")}. Set memory.backend to "memvidkb" ` +
+	'for the knowledge service (configured through the workspace\'s .memvidkb), or leave it "off" so ' +
+	"no memory subsystem runs.";
+
+/**
+ * What an operator is told when `memories.enabled: true` turns out to have been selecting the retired
+ * `local` backend: the flag's old meaning is gone, and silence would read as "memory quietly stopped
+ * working". Names the ids, the replacement and the setting to edit.
+ */
+const RETIRED_MEMORIES_ENABLED_MIGRATION_WARNING =
+	'memories.enabled: true selected the retired "local" memory backend — the local rollout-summary ' +
+	'pipeline, superseded by the memvid-kb-rs knowledge service. memory.backend is now "off", so no ' +
+	"memory subsystem runs. " +
+	RETIRED_MEMORY_BACKEND_HINT;
+
+/**
+ * Same notice for the pre-rename id: `memory.backend: "mnemosyne"` named the retired `mnemopi` pipeline,
+ * and the rename this migration used to perform now produces a value the selector rejects.
+ */
+const RETIRED_MNEMOSYNE_MIGRATION_WARNING =
+	'memory.backend: "mnemosyne" named the retired "mnemopi" memory backend — the same local ' +
+	"rollout-summary pipeline, superseded by the memvid-kb-rs knowledge service. " +
+	'memory.backend is now "off", so no memory subsystem runs. ' +
+	RETIRED_MEMORY_BACKEND_HINT;
+
+/**
  * Migrate a v17 leaf rename that used to nest under a boolean parent path
  * (`dev.autoqa.consent` → `dev.autoqaConsent`, `todo.reminders.max` →
  * `todo.remindersMax`). Pre-rename configs left the leaf beneath the parent,
@@ -716,6 +747,13 @@ export class Settings {
 
 	/** Legacy `lastChangelogVersion` captured from config.yml during migration (now a marker file). */
 	#legacyLastChangelogVersion?: string;
+
+	/**
+	 * Retired-backend migration notices already surfaced by this instance. Migration runs once per config
+	 * layer on every load, so this keeps each notice a one-time startup warning rather than a per-file
+	 * (or per-reload) repeat.
+	 */
+	#retiredMemoryBackendNotices = new Set<string>();
 
 	/** Pending save (debounced) */
 	#saveTimer?: NodeJS.Timeout;
@@ -2950,6 +2988,19 @@ export class Settings {
 		}
 	}
 
+	/**
+	 * Surface a retired-backend migration notice to the operator, at most once per `Settings` instance.
+	 *
+	 * A migration that leaves the config on `off` takes a subsystem away that the old value used to run.
+	 * Saying nothing would read as "memory quietly stopped working"; naming the retired ids and the
+	 * replacement is what makes the change diagnosable from the log alone.
+	 */
+	#warnRetiredMemoryBackend(message: string): void {
+		if (this.#retiredMemoryBackendNotices.has(message)) return;
+		this.#retiredMemoryBackendNotices.add(message);
+		logger.warn(`Settings: ${message}`);
+	}
+
 	/** Apply schema migrations to raw settings */
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
 		// queueMode -> steeringMode
@@ -3305,25 +3356,35 @@ export class Settings {
 			}
 		}
 
-		// Map legacy `memories.enabled` boolean to the explicit `memory.backend`
-		// enum if the latter hasn't been set yet. Idempotent: subsequent
-		// migrations are no-ops once memory.backend is materialised.
+		// Map legacy `memories.enabled` boolean to the explicit `memory.backend` enum if the latter
+		// hasn't been set yet. Idempotent: subsequent migrations are no-ops once memory.backend is
+		// materialised.
+		//
+		// `true` used to mean the retired `local` rollout-summary pipeline. It maps to `off`, never to a
+		// retired id: no migration may write a value the selector refuses, or a config that used to boot
+		// now hard-errors at startup. It does not map to `memvidkb` either — that would switch a network
+		// knowledge service (endpoint plus bearer token) on for someone who never asked for one, and turn
+		// a config migration into per-turn failures whenever the service is unreachable. `off` is explicit
+		// and inert; the notice carries the information instead.
 		const memoryBackendObj = raw.memory as Record<string, unknown> | undefined;
 		const memoryBackendSet = memoryBackendObj && typeof memoryBackendObj.backend === "string";
 		const memoriesObj = raw.memories as Record<string, unknown> | undefined;
 		if (!memoryBackendSet && memoriesObj && typeof memoriesObj.enabled === "boolean") {
-			const next = memoriesObj.enabled ? "local" : "off";
 			const memoryRoot = (memoryBackendObj ?? {}) as Record<string, unknown>;
-			memoryRoot.backend = next;
+			memoryRoot.backend = "off";
 			raw.memory = memoryRoot;
+			if (memoriesObj.enabled) this.#warnRetiredMemoryBackend(RETIRED_MEMORIES_ENABLED_MIGRATION_WARNING);
 		}
 
-		// Rename the legacy local `mnemosyne` memory backend to `mnemopi`.
-		// - `memory.backend: "mnemosyne"` now selects the renamed backend.
-		// - the top-level `mnemosyne` settings object becomes `mnemopi`.
-		// Idempotent: skips the object move once `mnemopi` is materialised.
+		// `memory.backend: "mnemosyne"` named the same pipeline as `mnemopi` under its pre-rename id, and
+		// `mnemopi` is retired (see memory-backend/settings.ts). The rename this migration used to perform
+		// therefore wrote a value the selector now rejects, which would have turned a legacy config into a
+		// startup failure. It lands on `off` and says so, exactly like `memories.enabled` above. The
+		// settings block below still moves `mnemosyne` → `mnemopi`, so the retained runtime keeps its config.
+		// Idempotent: skipped once memory.backend is no longer `mnemosyne`.
 		if (memoryBackendObj && memoryBackendObj.backend === "mnemosyne") {
-			memoryBackendObj.backend = "mnemopi";
+			memoryBackendObj.backend = "off";
+			this.#warnRetiredMemoryBackend(RETIRED_MNEMOSYNE_MIGRATION_WARNING);
 		}
 		if ("mnemosyne" in raw && !("mnemopi" in raw)) {
 			raw.mnemopi = raw.mnemosyne;
