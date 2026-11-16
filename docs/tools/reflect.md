@@ -12,12 +12,14 @@
    - `packages/coding-agent/src/hindsight/client.ts` — HTTP `reflect` call and error mapping.
 - Mnemopi collaborators:
    - `packages/coding-agent/src/mnemopi/state.ts` — scoped local recall and context formatting.
+   - `packages/coding-agent/src/memvidkb/backend.ts` — knowledge-service `search`, refusal messages, and rendered output.
    - `docs/tools/retain.md` — shared backend, storage, scoping, and mental-model behavior.
 
 ## Registration / Visibility
 
 - Tool metadata: `approval = "read"`, `strict = true`, `loadMode = "discoverable"`.
-- The tool is registered only for `memory.backend = "hindsight"` or `"mnemopi"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`).
+- The tool is registered only for `memory.backend = "hindsight"`, `"mnemopi"`, or `"memvidkb"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`); memvidkb additionally requires a readable `.memvidkb` binding the workspace to a context and tracks.
+- With `memory.backend = "memvidkb"`, execution runs `memvidkbBackend.search(...)` (appending `context` to the query the way the Mnemopi branch does) and frames the hits as recalled context locally. It does not call a server-side synthesis route: the service's generated-answer endpoint is not part of this client's surface.
 - In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`reflect` set. Restricted lists are not widened.
 - In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `xd://reflect`; an explicitly requested tool remains top-level.
 - Execution is single-shot and emits no progress updates.
@@ -49,7 +51,7 @@ Mnemopi:
 
 ## Flow
 
-1. `MemoryReflectTool.createIf(...)` exposes the tool when `memory.backend` is either `"hindsight"` or `"mnemopi"`.
+1. `MemoryReflectTool.createIf(...)` exposes the tool when `memory.backend` is `"hindsight"`, `"mnemopi"`, or `"memvidkb"`.
 2. `execute(...)` runs under `untilAborted(...)`.
 3. If the backend is `mnemopi`:
    - it reads `session.getMnemopiSessionState()` and throws if the backend was not started;
@@ -92,7 +94,7 @@ Mnemopi:
 
 ## Limits & Caps
 
-- Tool availability requires `memory.backend` to be `"hindsight"` or `"mnemopi"`; default `memory.backend` is `"off"`.
+- Tool availability requires `memory.backend` to be `"hindsight"`, `"mnemopi"`, or `"memvidkb"`; default `memory.backend` is `"off"`.
 - Tool-level params: only `query` is required; `context` is optional. Both are plain strings with no schema-level minimum length.
 - Hindsight budget comes from `hindsight.recallBudget`, default `"mid"`.
 - Hindsight `reflect` has no client-side token cap parameter here; its request deadline defaults to `hindsight.reflectTimeoutMs = 120_000`.

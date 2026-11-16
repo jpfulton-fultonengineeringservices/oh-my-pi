@@ -5,6 +5,7 @@ import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skill
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { localBackend } from "../memory-backend/local-backend";
+import { memvidkbBackend } from "../memvidkb/backend";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -48,12 +49,15 @@ export type LearnParams = typeof learnSchemaWithScope.infer;
  */
 export class LearnTool implements AgentTool<LearnSchema> {
 	readonly name = "learn";
-	/** A global lesson reaches every project's recall, so it needs the same approval as a file write. */
+	/**
+	 * A global lesson reaches every project's recall, and a `memvidkb` lesson lands in a
+	 * shared central track, so both need the same approval as a file write.
+	 */
 	readonly approval = (args: unknown) => {
 		const params = args as Partial<LearnParams>;
-		return params.skill || params.scope === "global" || cfgMemoryBackend.get(this.session.settings) === "local"
-			? "write"
-			: "read";
+		const backend = cfgMemoryBackend.get(this.session.settings);
+		const needsWrite = params.skill || params.scope === "global" || backend === "local" || backend === "memvidkb";
+		return needsWrite ? "write" : "read";
 	};
 	readonly label = "Learn";
 	get description(): string {
@@ -71,7 +75,8 @@ export class LearnTool implements AgentTool<LearnSchema> {
 	static createIf(session: ToolSession): LearnTool | null {
 		if (!cfgAutolearnEnabled.get(session.settings)) return null;
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "local") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "local" && backend !== "memvidkb")
+			return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new LearnTool(session);
 	}
@@ -125,6 +130,18 @@ export class LearnTool implements AgentTool<LearnSchema> {
 			if (!result || result.stored === 0) {
 				throw new Error("Lesson was empty after sanitization; nothing stored.");
 			}
+		} else if (backend === "memvidkb") {
+			const result = await memvidkbBackend.save(
+				{ agentDir: this.session.settings.getAgentDir(), cwd: this.session.cwd },
+				{ content: params.memory, context: params.context, source: "coding-agent-learn", importance: 0.8 },
+			);
+			// A refused or unreachable service stored nothing: throw so the skill minting
+			// below never runs for a lesson that was never kept.
+			if (result.stored === 0) {
+				throw new Error(`memvidkb did not store the lesson: ${result.message ?? "the service stored nothing"}`);
+			}
+			const recordId = result.ids?.[0];
+			if (recordId) memoryMessage = `Lesson stored (id ${recordId})`;
 		} else {
 			const state = this.session.getHindsightSessionState?.();
 			if (!state) {

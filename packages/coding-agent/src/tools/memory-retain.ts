@@ -4,6 +4,7 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { prompt, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
+import { memvidkbBackend } from "../memvidkb/backend";
 import type { ToolSession } from ".";
 
 import { isGlobalMemoryScopeAvailable } from "../memory-backend/global-scope";
@@ -56,13 +57,54 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "memvidkb") return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryRetainTool(session);
 	}
 
 	async execute(toolCallId: string, params: MemoryRetainParams): Promise<AgentToolResult<MemoryRetainDetails>> {
 		const backend = cfgMemoryBackend.get(this.session.settings);
+		if (backend === "memvidkb") {
+			// No global tier exists in the knowledge service: a track is scoped by the
+			// context in `.memvidkb`, so an item asking for global storage is refused
+			// before anything is written rather than quietly filed as project memory.
+			if (params.items.some(item => item.scope === "global")) {
+				throw new Error("Global memory scope is not available with the memvidkb memory backend.");
+			}
+			const context = {
+				agentDir: this.session.settings.getAgentDir(),
+				cwd: this.session.cwd,
+			};
+			// A failed item stores nothing and stops the batch, so the caller retries only
+			// what failed instead of trusting a success count that never happened.
+			const storedIds: string[] = [];
+			for (const [index, item] of params.items.entries()) {
+				const result = await memvidkbBackend.save(context, {
+					content: item.content,
+					context: item.context,
+					source: "coding-agent-retain",
+				});
+				if (result.stored === 0) {
+					const reason = result.message ?? "the service stored nothing";
+					const kept =
+						storedIds.length === 0
+							? "Nothing was stored."
+							: `Stored before the failure and kept: ${storedIds.map((storedId, storedIndex) => `item ${String(storedIndex + 1)} (id ${storedId})`).join(", ")}.`;
+					const untried = index + 1 < params.items.length ? " Later items were not attempted." : "";
+					throw new Error(
+						`memvidkb did not store item ${String(index + 1)} of ${String(params.items.length)}: ${reason}. ${kept}${untried}`,
+					);
+				}
+				storedIds.push(...(result.ids ?? []));
+			}
+			const count = params.items.length;
+			const noun = count === 1 ? "memory" : "memories";
+			return {
+				content: [{ type: "text", text: `${String(count)} ${noun} stored.` }],
+				details: { count },
+			};
+		}
+
 		if (backend === "mnemopi") {
 			const state = this.session.getMnemopiSessionState?.();
 			if (!state) {

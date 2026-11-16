@@ -21,12 +21,14 @@
    - `packages/coding-agent/src/mnemopi/state.ts` — scoped recall/retain state and local writes.
    - `packages/coding-agent/src/mnemopi/config.ts` — local SQLite path, bank, scoping, provider settings.
    - `packages/mnemopi/src/core/memory.ts` — local memory runtime used by `remember(...)`.
+   - `packages/coding-agent/src/memvidkb/backend.ts` — knowledge-service `save`, consent gate, and refusal messages.
 
 ## Registration / Visibility
 
 - Tool metadata: `strict = true`, `loadMode = "discoverable"`. Approval is dynamic: a call with any `scope: "global"` item has `approval = "write"`, because the write reaches every project's recall; otherwise `approval = "read"`, even though successful calls enqueue or perform memory writes.
-- The tool is registered only for `memory.backend = "hindsight"` or `"mnemopi"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`).
-- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`reflect` set for either supported backend. Restricted lists are not widened.
+- The tool is registered only for `memory.backend = "hindsight"`, `"mnemopi"`, or `"memvidkb"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`); memvidkb additionally requires a readable `.memvidkb` whose context permits writes (`remember = "on"`).
+- With `memory.backend = "memvidkb"`, `scope: "global"` is refused before anything is written — the service has no global tier, a track being scoped by the `.memvidkb` context — and each item is stored through `memvidkbBackend.save(...)`; a failed item reports its index together with what was already stored and what was never attempted (`packages/coding-agent/src/tools/memory-retain.ts:67-98`).
+- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`reflect` set for any supported backend. Restricted lists are not widened.
 - In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `xd://retain`; an explicitly requested tool remains top-level.
 - Execution returns one final result and has no progress callback or cancellation parameter.
 
@@ -56,8 +58,8 @@ Mnemopi:
 
 ## Flow
 
-1. `MemoryRetainTool.createIf(...)` exposes the tool when `memory.backend` is either `"hindsight"` or `"mnemopi"`.
-2. `execute(...)` re-reads `memory.backend` and dispatches to the matching session state.
+1. `MemoryRetainTool.createIf(...)` exposes the tool when `memory.backend` is `"hindsight"`, `"mnemopi"`, or `"memvidkb"`.
+2. `execute(...)` re-reads `memory.backend` and dispatches to the matching session state; `memvidkb` holds no session state and calls the backend directly.
 3. If the backend is `mnemopi`:
    - it fetches `session.getMnemopiSessionState()` and throws if the backend was not started;
    - if any item has `scope: "global"`, it resolves `state.getGlobalRetainTarget()` first; under `per-project` scoping that throws `Mnemopi global scope requires global or per-project-tagged scoping.` and nothing in the batch is stored;

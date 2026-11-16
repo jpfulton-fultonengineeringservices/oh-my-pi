@@ -3,6 +3,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import memoryEditDescription from "../prompts/tools/memory-edit.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
+import { memvidkbBackend } from "../memvidkb/backend";
 import type { ToolSession } from ".";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
@@ -19,7 +20,16 @@ export type MemoryEditParams = typeof memoryEditSchema.infer;
 
 export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 	readonly name = "memory_edit";
-	readonly approval = "read" as const;
+	/**
+	 * A knowledge-service edit deletes or rewrites central, shared state, so it carries
+	 * the same approval tier as a global retain. Mnemopi edits stay `read`: they mutate
+	 * this project's own SQLite file, which is what the tool's stock tier was set for.
+	 */
+	readonly approval = (args: unknown) =>
+		cfgMemoryBackend.get(this.session.settings) === "memvidkb" &&
+		(args as Partial<MemoryEditParams>)?.op !== "invalidate"
+			? "write"
+			: "read";
 	readonly label = "Memory Edit";
 	get description(): string {
 		return prompt.render(memoryEditDescription, {
@@ -29,17 +39,36 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 	readonly parameters = memoryEditSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";
-	readonly summary = "Update, forget, or invalidate Mnemopi memories";
+	readonly summary = "Update, forget, or invalidate long-term memories";
 
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryEditTool | null {
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "mnemopi") return null;
+		if (backend !== "mnemopi" && backend !== "memvidkb") return null;
 		return new MemoryEditTool(session);
 	}
 
 	async execute(_id: string, params: MemoryEditParams): Promise<AgentToolResult> {
+		if (cfgMemoryBackend.get(this.session.settings) === "memvidkb") {
+			const result = await memvidkbBackend.edit(
+				{
+					agentDir: this.session.settings.getAgentDir(),
+					cwd: this.session.cwd,
+				},
+				{
+					op: params.op,
+					id: params.id,
+					content: params.content,
+					replacementId: params.replacement_id,
+				},
+			);
+			return {
+				content: [{ type: "text", text: result.message }],
+				details: result,
+			};
+		}
+
 		const state = this.session.getMnemopiSessionState?.();
 		if (!state) {
 			throw new Error("Mnemopi backend is not initialised for this session.");

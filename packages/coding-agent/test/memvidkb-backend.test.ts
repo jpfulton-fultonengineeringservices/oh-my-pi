@@ -374,7 +374,12 @@ describe("memvidkb backend status, prompts, and reports", () => {
 		expect(instructions).toBeDefined();
 		expect(instructions).toContain("fulton");
 		expect(instructions).toContain("`dev`");
-		expect(instructions).toContain("knowledge://<context>/<track>/<record-id>");
+		// The resolver rejects any other shape (`internal-urls/knowledge-protocol.ts`
+		// answers `invalid_knowledge_uri`), so the instructions must teach the two forms
+		// that actually resolve — this line used to pin the malformed one.
+		expect(instructions).toContain("knowledge://record/<context>/<track>/<record-id>");
+		expect(instructions).toContain("knowledge://track/<context>/<track>");
+		expect(instructions).not.toMatch(/knowledge:\/\/(?!record\/|track\/)/);
 		expect(instructions).not.toContain(TOKEN);
 
 		await writeConfig({ remember: "off" });

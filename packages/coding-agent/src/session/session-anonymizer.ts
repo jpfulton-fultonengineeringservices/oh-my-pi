@@ -634,6 +634,7 @@ const ARG_SCHEMAS: Record<string, ArgSchema> = {
 	context_notes: argSchema("text"),
 	new_context: argSchema("text"),
 	memory_edit: argSchema("op id content importance# replacement_id"),
+	memory_list: argSchema("limit# offset#"),
 	retain: argSchema("items content context scope"),
 	recall: argSchema("query"),
 	reflect: argSchema("query context"),

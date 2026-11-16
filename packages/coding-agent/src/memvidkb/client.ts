@@ -12,8 +12,9 @@
  *
  * Only the routes this backend needs are wrapped: `POST /memories/{id}/find`,
  * `POST /memories/{id}/records`, `GET /memories/{id}/records`, `GET /healthz`. The
- * rest of the verb set (create, ask, enrich, supersede, verify, track metadata) is
- * the tool layer's surface and stays there.
+ * record-addressed verbs (inspect, supersede, erase) live in `./client-records`, which
+ * reuses the transport helpers exported here; the remainder of the verb set (create,
+ * ask, enrich, verify, track metadata) is the tool layer's surface and stays there.
  *
  * Nothing here retries, queues, or journals. A read this client cannot honour is a
  * prefixed failure with a non-empty message, never an empty result set; a write that
@@ -466,7 +467,7 @@ export function readRows<T>(
 
 // One JSON call whose body is then read into a documented shape; both verbs below are
 // this plus their own field names.
-async function callJsonParsed<T>(
+export async function callJsonParsed<T>(
 	endpoint: MemvidkbEndpoint,
 	request: MemvidkbRequest,
 	signal: AbortSignal | undefined,
@@ -478,7 +479,7 @@ async function callJsonParsed<T>(
 	return parsed.ok ? { ok: true, data: parsed.value } : { ok: false, error: parsed.error };
 }
 
-function trackPath(track: string, suffix: string): string {
+export function trackPath(track: string, suffix: string): string {
 	return `/memories/${encodeURIComponent(track)}${suffix}`;
 }
 

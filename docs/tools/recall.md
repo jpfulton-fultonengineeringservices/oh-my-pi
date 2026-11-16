@@ -12,15 +12,17 @@
    - `packages/coding-agent/src/hindsight/client.ts` — HTTP `recall` call and error mapping.
    - `packages/coding-agent/src/hindsight/bank.ts` — bank id and tag-filter scoping.
 - Mnemopi collaborators:
-   - `packages/coding-agent/src/mnemopi/state.ts` — scoped local recall and result formatting with ids.
-   - `packages/coding-agent/src/mnemopi/config.ts` — local bank scoping and recall limits.
-   - `docs/tools/retain.md` — shared backend, storage, scoping, and retention behavior.
+  - `packages/coding-agent/src/mnemopi/state.ts` — scoped local recall and result formatting with ids.
+  - `packages/coding-agent/src/mnemopi/config.ts` — local bank scoping and recall limits.
+  - `packages/coding-agent/src/memvidkb/backend.ts` — knowledge-service `search`, refusal messages, and rendered output.
+  - `docs/tools/retain.md` — shared backend, storage, scoping, and retention behavior.
 
 ## Registration / Visibility
 
 - Tool metadata: `approval = "read"`, `strict = true`, `loadMode = "discoverable"`.
-- The tool is registered only for `memory.backend = "hindsight"` or `"mnemopi"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`).
-- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`reflect` set for either supported backend. Restricted lists are not widened.
+- The tool is registered only for `memory.backend = "hindsight"`, `"mnemopi"`, or `"memvidkb"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`); memvidkb additionally requires a readable `.memvidkb` binding the workspace to a context and tracks.
+- With `memory.backend = "memvidkb"`, execution calls `memvidkbBackend.search(...)` against the knowledge service and renders its hits; a backend refusal is surfaced as a thrown error carrying that refusal message (`packages/coding-agent/src/tools/memory-recall.ts:65-80`).
+- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`reflect` set for any supported backend. Restricted lists are not widened.
 - In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `xd://recall`; an explicitly requested tool remains top-level.
 - Execution is single-shot. The tool does not emit streaming argument/result updates.
 
@@ -58,7 +60,7 @@ When no matches exist:
 
 ## Flow
 
-1. `MemoryRecallTool.createIf(...)` exposes the tool when `memory.backend` is either `"hindsight"` or `"mnemopi"`.
+1. `MemoryRecallTool.createIf(...)` exposes the tool when `memory.backend` is `"hindsight"`, `"mnemopi"`, or `"memvidkb"`.
 2. `execute(...)` wraps the operation in `untilAborted(...)`.
 3. If the backend is `mnemopi`:
    - it reads `session.getMnemopiSessionState()` and throws if the backend was not started;
@@ -101,7 +103,7 @@ When no matches exist:
 
 ## Limits & Caps
 
-- Tool availability requires `memory.backend` to be `"hindsight"` or `"mnemopi"`; default `memory.backend` is `"off"`.
+- Tool availability requires `memory.backend` to be `"hindsight"`, `"mnemopi"`, or `"memvidkb"`; default `memory.backend` is `"off"`.
 - Hindsight client default budget for raw `HindsightApi.recall(...)` is `"mid"`; this tool overrides from config.
 - Hindsight recall settings:
    - `hindsight.recallBudget = "mid"`

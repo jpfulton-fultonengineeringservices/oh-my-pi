@@ -34,22 +34,29 @@ export {
 	type MemvidkbRefusal,
 	type MemvidkbRequest,
 } from "./client";
+export { eraseDocument, inspectRecord, supersedeRecord } from "./client-records";
 export {
+	ERASE_REPORT,
 	FIND_MODES,
 	FIND_PAGE,
 	FIND_RESULT,
+	RECORD_DETAIL,
 	RECORD_LIST_ITEM,
 	RECORD_PAGE,
 	REMEMBER_RESPONSE,
+	SUPERSEDE_RESPONSE,
 	type FieldKind,
 	type FieldShape,
+	type EraseReport,
 	type FindMode,
 	type FindResponse,
 	type FindResultItem,
 	type HealthReport,
+	type RecordDetail,
 	type RecordListItem,
 	type RecordListing,
 	type RememberResponse,
+	type SupersedeResponse,
 	type Shaped,
 } from "./dto";
 export { KNOWLEDGE_ERROR_PREFIX, KNOWLEDGE_ERROR_PREFIXES, hasKnowledgeErrorPrefix, redactToken } from "./errors";

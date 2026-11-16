@@ -48,4 +48,24 @@ describe("resolveMemoryBackend", () => {
 			count: 0,
 		});
 	});
+
+	it("reports listing and editing as unavailable for a backend that serves neither verb", async () => {
+		// The two verbs `memvidkb` added to the `MemoryBackend` interface are optional: every
+		// backend that predates them must still resolve, and a caller that asks one for a
+		// listing gets a named refusal rather than an empty page it could mistake for "empty".
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		const memory = createMemoryRuntimeContext({
+			agentDir: "/tmp/agent",
+			cwd: "/tmp/project",
+			session: { settings } as never,
+		});
+
+		const listed = await memory.list();
+		expect(listed).toMatchObject({ backend: "local", count: 0, items: [] });
+		expect(listed.message).toContain("not available for the local backend");
+
+		const edited = await memory.edit({ op: "forget", id: "whatever" });
+		expect(edited).toMatchObject({ backend: "local", status: "unsupported" });
+		expect(edited.message).toContain("not available for the local backend");
+	});
 });

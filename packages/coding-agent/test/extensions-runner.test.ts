@@ -2590,6 +2590,20 @@ describe("ExtensionRunner", () => {
 					}),
 					search: async query => ({ backend: "mnemopi", query, count: 0, items: [] }),
 					save: async () => ({ backend: "mnemopi", stored: 1 }),
+					// `list`/`edit` joined the runtime context with the KB verbs, so a double for a
+					// backend that serves neither has to answer with the same named refusal the
+					// runtime hands out — an empty page would claim an inventory that does not exist.
+					list: async () => ({
+						backend: "mnemopi" as const,
+						count: 0,
+						items: [],
+						message: "Memory listing is not available for the mnemopi backend.",
+					}),
+					edit: async () => ({
+						backend: "mnemopi" as const,
+						status: "unsupported" as const,
+						message: "Memory editing is not available for the mnemopi backend.",
+					}),
 				}),
 			);
 			runner.initialize(

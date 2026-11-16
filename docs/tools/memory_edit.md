@@ -7,11 +7,13 @@
 - Entry: `packages/coding-agent/src/tools/memory-edit.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/memory-edit.md`
 - Backend collaborator: `packages/coding-agent/src/mnemopi/state.ts` (`editScopedMemory(...)`)
+- Backend collaborator: `packages/coding-agent/src/memvidkb/backend.ts` (`edit(...)` → `supersedeRecord` / `inspectRecord` + `eraseDocument`)
 
 ## Registration / Visibility
 
-- Tool metadata: `approval = "read"`, `strict = true`, `loadMode = "discoverable"`, even though successful calls mutate local memory.
-- Registration requires `memory.backend = "mnemopi"`; the tool is absent for `"off"`, `"local"`, and `"hindsight"`.
+- Tool metadata: `strict = true`, `loadMode = "discoverable"`. Approval is `"write"` for every `memvidkb` call except `op: "invalidate"` — which the backend refuses without sending a request — and `"read"` otherwise, even though successful calls mutate memory.
+- Registration requires `memory.backend` to be `"mnemopi"` or `"memvidkb"`; the tool is absent for `"off"`, `"local"`, and `"hindsight"`.
+- With `memory.backend = "memvidkb"` all three ops sit behind the same `remember = "on"` consent a write needs: `update` supersedes the record (the prior stays readable, and the result names both ids), `forget` resolves the id to its `sourceUri` first and refuses to delete if that read fails, and `invalidate` is a named refusal because the service has no soft-invalidate route. An erase that reports residual frames is reported as failed, not as success (`packages/coding-agent/src/memvidkb/backend.ts:423-510`).
 - In an unrestricted session with an explicit tool list, registration auto-includes `memory_edit` for Mnemopi. Restricted lists are not widened.
 - In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `xd://memory_edit`; an explicitly requested tool remains top-level.
 - Execution is synchronous and single-shot, with no progress callback or cancellation parameter.
@@ -36,9 +38,9 @@
 
 ## Flow
 
-1. `MemoryEditTool.createIf(...)` exposes the tool only when `memory.backend == "mnemopi"`.
-2. `execute(...)` fetches `session.getMnemopiSessionState()` and fails if the backend is not initialized.
-3. `update` requires at least one of `content` or `importance`.
+1. `MemoryEditTool.createIf(...)` exposes the tool when `memory.backend` is `"mnemopi"` or `"memvidkb"`.
+2. On the Mnemopi path, `execute(...)` fetches `session.getMnemopiSessionState()` and fails if the backend is not initialized; the memvidkb path calls `memvidkbBackend.edit(...)` and holds no session state.
+3. `update` requires at least one of `content` or `importance` (Mnemopi); the memvidkb path requires `content` and ignores `importance`.
 4. `importance` is clamped to `0..1` before the backend call.
 5. The tool calls `state.editScopedMemory(op, id, { content, importance, replacementId })`.
 6. The backend searches the deduplicated retain, recall, and global targets in that order. It returns the first successful editable result, otherwise the first resolved ineligible result, otherwise `not_found`.
@@ -60,7 +62,7 @@
 
 ## Limits & Caps
 
-- Availability requires `memory.backend = "mnemopi"`; Hindsight and local file-backed memory do not expose this tool.
+- Availability requires `memory.backend` to be `"mnemopi"` or `"memvidkb"`; `off`, local file-backed memory, and Hindsight do not expose this tool.
 - `id` must be supplied directly; the tool does not search by content.
 - Recall previews are capped at 500 characters by default. Always fetch `read memory://<id>` before `update`; the URL resolves the full row from the calling session's scoped banks.
 - `update` with neither `content` nor `importance` is rejected before any backend write.
