@@ -13,6 +13,8 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
+import { localBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/local-backend";
+
 // Embedded hosts share one Settings (pinned to a host directory) across sessions
 // for several projects; memory injection must follow the session's project.
 describe("local memory injection scope", () => {
@@ -49,8 +51,15 @@ describe("local memory injection scope", () => {
 		await Bun.write(path.join(getMemoryRoot(agentDir, projectCwd), "memory_summary.md"), "PROJECT_SCOPE_SUMMARY\n");
 		await Bun.write(path.join(getMemoryRoot(agentDir, hostCwd), "learned.md"), "- HOST_SCOPE_LESSON\n");
 
+		// The selector retires `local`, so no session can start under it any more, but the
+		// claim under test is the backend object's own scoping contract. The session therefore
+		// comes up with memory off, and the object is driven with settings that still carry the
+		// retired id pinned to the HOST directory (`Settings.isolated` bypasses validation), so
+		// a regression to the settings' cwd would drop the project summary.
 		const settings = Settings.isolated({ "async.enabled": false, "memory.backend": "local" });
 		await settings.reloadForCwd(hostCwd);
+		const sessionSettings = Settings.isolated({ "async.enabled": false, "memory.backend": "off" });
+		await sessionSettings.reloadForCwd(hostCwd);
 		const result = await createAgentSession({
 			cwd: projectCwd,
 			agentDir,
@@ -58,7 +67,7 @@ describe("local memory injection scope", () => {
 			agentRegistry: new AgentRegistry(),
 			authStorage,
 			modelRegistry,
-			settings,
+			settings: sessionSettings,
 			model,
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -71,8 +80,8 @@ describe("local memory injection scope", () => {
 		});
 		session = result.session;
 
-		const systemPrompt = session.agent.state.systemPrompt.join("\n");
-		expect(systemPrompt).toContain("PROJECT_SCOPE_SUMMARY");
-		expect(systemPrompt).not.toContain("HOST_SCOPE_LESSON");
+		const instructions = await localBackend.buildDeveloperInstructions(agentDir, projectCwd, settings, session);
+		expect(instructions).toContain("PROJECT_SCOPE_SUMMARY");
+		expect(instructions).not.toContain("HOST_SCOPE_LESSON");
 	});
 });
