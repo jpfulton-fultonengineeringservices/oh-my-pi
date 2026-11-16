@@ -80,7 +80,9 @@ describe("createAgentSession auto-learn tool activation", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({
 				"autolearn.enabled": true,
-				"memory.backend": "hindsight",
+				// A selectable id: the arm's subject is the SDK initialising the *selected* backend
+				// before an auto-learn session runs, and a retired id now refuses to resolve at all.
+				"memory.backend": "memvidkb",
 				"hindsight.apiUrl": "http://127.0.0.1:1",
 				"hindsight.mentalModelsEnabled": false,
 			}),

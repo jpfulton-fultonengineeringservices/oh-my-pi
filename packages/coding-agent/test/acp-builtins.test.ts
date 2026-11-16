@@ -1367,6 +1367,7 @@ describe("wave 3 commands", () => {
 
 	it("/memory stats: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
 		const { output, runtime } = createRuntime();
+		cfgMemoryBackend.set(runtime.settings, "off");
 		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
@@ -1374,6 +1375,7 @@ describe("wave 3 commands", () => {
 
 	it("/memory diagnose: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
 		const { output, runtime } = createRuntime();
+		cfgMemoryBackend.set(runtime.settings, "off");
 		const result = await executeAcpBuiltinSlashCommand("/memory diagnose", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
@@ -1381,10 +1383,12 @@ describe("wave 3 commands", () => {
 
 	it("/memory stats: still names the backend when a real backend simply has no stats hook", async () => {
 		const { output, runtime } = createRuntime();
-		cfgMemoryBackend.set(runtime.settings, "local");
+		// `memvidkb` is the selectable id without a stats hook; the retired ids can no longer be
+		// resolved at all, so they cannot stand in for "a real backend with no hook".
+		cfgMemoryBackend.set(runtime.settings, "memvidkb");
 		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
 		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toBe("Memory stats is not available for the local backend.");
+		expect(output[0]).toBe("Memory stats is not available for the memvidkb backend.");
 	});
 
 	// /todo start fuzzy match

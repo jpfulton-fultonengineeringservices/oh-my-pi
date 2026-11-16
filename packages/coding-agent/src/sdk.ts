@@ -5837,10 +5837,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// tools per run. The subscription lives for the session's lifetime; the
 		// reference is intentionally discarded (the listener retains it).
 		if (!restrictToolNames) {
+			// `startMemoryBackend` rejects when `memory.backend` names a retired backend, because
+			// `resolveMemoryBackend` refuses rather than substituting. A top-level session with
+			// auto-learn on awaits it, so that session fails to create; every other session keeps
+			// memory startup off the critical path for the startup profile documented above, which
+			// means the rejection has to be surfaced here — an unchecked `void` left the operator
+			// with no memory tools, no notice, and an unhandled rejection. Same channel and wording
+			// as the settings-change path (session-memory.ts:159-162), so a retired id says the
+			// same thing whichever path reads the setting.
+			const memoryStartup = logger.time("startMemoryStartupTask", startMemoryBackend);
 			if (cfgAutolearnEnabled.get(settings) && taskDepth === 0) {
-				await logger.time("startMemoryStartupTask", startMemoryBackend);
+				await memoryStartup;
 			} else {
-				void logger.time("startMemoryStartupTask", startMemoryBackend);
+				memoryStartup.catch((error: unknown) => {
+					logger.warn("Memory lifecycle: starting memory backend failed", { error: String(error) });
+					session.emitNotice("error", `Failed to start the memory backend: ${String(error)}`, "Memory");
+				});
 			}
 			if (taskDepth === 0) {
 				new AutoLearnController({

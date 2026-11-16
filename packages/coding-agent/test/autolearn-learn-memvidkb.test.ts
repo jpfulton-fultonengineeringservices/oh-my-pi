@@ -251,17 +251,17 @@ describe("learn gating under memory.backend=memvidkb", () => {
 			if (!isLearnCapableBackend(backend)) expect(constructed).toBe(false);
 			if (offered) offeredByName.push(backend);
 		}
-		// Exactly the capable set is offered. `Settings.isolated()` leaves Hindsight reading as
-		// configured, so all four appear; `off` and `sharpshooter` — which has no sink in
-		// `execute` — must never appear even though they are real `MemoryBackendId` values.
+		// Exactly the capable set is offered. After the retirement `memvidkb` is the only id with a
+		// sink, so `off`, `sharpshooter` and the three retired ids must never appear even though all
+		// of them are real `MemoryBackendId` values.
 		expect([...offeredByName].sort()).toEqual([...LEARN_CAPABLE_BACKENDS].sort());
-		expect([...LEARN_CAPABLE_BACKENDS].sort()).toEqual(["hindsight", "local", "memvidkb", "mnemopi"]);
+		expect([...LEARN_CAPABLE_BACKENDS].sort()).toEqual(["memvidkb"]);
 	});
 
-	it("tiers a plain memvidkb lesson as a write, and keeps approval a function of args", () => {
+	it("tiers every reachable lesson as a write", () => {
 		const tool = new LearnTool(kbSession());
-		// A central record is a write even with no skill payload, and approval must stay
-		// arg-sensitive rather than collapsing to a flat "exec".
+		// A central record is a write even with no skill payload. The read tier is gone with the
+		// retired backends: no other id mounts this tool, so nothing is left to tier.
 		expect(tool.approval({ memory: "x" })).toBe("write");
 		expect(
 			new LearnTool(kbSession()).approval({
@@ -269,9 +269,19 @@ describe("learn gating under memory.backend=memvidkb", () => {
 				skill: { action: "create", name: "n", description: "d", body: "b" },
 			}),
 		).toBe("write");
-		// A backend whose store is a local queue stays read-tiered without a skill payload.
-		const hindsight = Settings.isolated({ "autolearn.enabled": true, "memory.backend": "hindsight" });
-		expect(new LearnTool({ ...kbSession(), settings: hindsight }).approval({ memory: "x" })).toBe("read");
+	});
+
+	it("refuses a retired local config and mints nothing", async () => {
+		// The leak this retires: `execute` used to compare the raw setting against "local", so a
+		// retired-`local` config minted `learned.md` while every other entry point refused to
+		// start. The tool must not mount, and calling it anyway must fail rather than write.
+		const settings = Settings.isolated({ "autolearn.enabled": true, "memory.backend": "local" });
+		const session: ToolSession = { ...kbSession(), settings };
+		expect(LearnTool.createIf(session)).toBeNull();
+		const before = await fs.readFile(learnedFile, "utf-8").catch(() => null);
+		await expect(new LearnTool(session).execute("retired-local-1", { memory: "x" })).rejects.toThrow(/retired/);
+		const after = await fs.readFile(learnedFile, "utf-8").catch(() => null);
+		expect(after).toBe(before);
 	});
 });
 

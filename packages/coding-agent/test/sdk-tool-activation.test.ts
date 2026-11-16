@@ -2085,7 +2085,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				modelRoles: { image: "openai/gpt-image-1" },
 				"generate_image.enabled": true,
 				"speechgen.enabled": true,
-				"memory.backend": "hindsight",
+				"memory.backend": "memvidkb",
 				"autolearn.enabled": true,
 			});
 

@@ -890,11 +890,8 @@ describe("global memory scope exposure", () => {
 			}),
 		);
 		const retain = MemoryRetainTool.createIf(session)!;
-		const learn = LearnTool.createIf(session)!;
 		expect(retain.approval({ items: [{ content: "x" }, { content: "y", scope: "global" }] })).toBe("write");
 		expect(retain.approval({ items: [{ content: "x", scope: "project" }] })).toBe("read");
-		expect(learn.approval({ memory: "x", scope: "global" })).toBe("write");
-		expect(learn.approval({ memory: "x" })).toBe("read");
 	});
 });
 

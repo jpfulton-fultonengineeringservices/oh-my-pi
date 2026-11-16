@@ -359,7 +359,7 @@ This skill is added after session creation.
 			"skills.enablePiUser": false,
 			"skills.enablePiProject": true,
 			"autolearn.enabled": true,
-			"memory.backend": "local",
+			"memory.backend": "memvidkb",
 		});
 		const { session } = await createSession({
 			cwd: tempDir,
