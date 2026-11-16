@@ -187,7 +187,9 @@ describe("knowledge configuration", () => {
 	it("reports TOKEN_ENV_UNSET instead of falling back to an unauthenticated config", async () => {
 		await withTempDir(async dir => {
 			await writeConfig(dir, config());
-			for (const value of [undefined, ""]) {
+			// A whitespace-only bearer is the same operator mistake as a blank one: it must read
+			// as unset, for both readers, and never go out as `Bearer   `.
+			for (const value of [undefined, "", "   "]) {
 				setToken(value);
 				expect(loadMemvidkb(dir)).toMatchObject({ err: { code: "TOKEN_ENV_UNSET" } });
 				expect(await loadMemvidkbConfig(dir)).toMatchObject({ err: { code: "TOKEN_ENV_UNSET" } });
@@ -218,6 +220,24 @@ describe("KnowledgeProtocolHandler", () => {
 			expect(resource.notes).toEqual(["CONFIG_NOT_FOUND"]);
 			expect(resource.content).toContain("No .memvidkb configuration file found");
 			expect(resource.immutable).toBe(true);
+		});
+	});
+
+	it("sends the bearer it validated, never the padded env value", async () => {
+		// One env var, one wire value. The loader's gate accepts a padded bearer by trimming it,
+		// so the send site has to use that same trimmed value: `Bearer   tok  ` would be a
+		// different credential than the one gated, and the service would answer 401.
+		setToken(`   ${TOKEN_VALUE}   `);
+		await withTempDir(async dir => {
+			await writeConfig(dir, config());
+			const calls = stubFetch(() => Response.json(RECORD_BODY));
+			const resource = await new KnowledgeProtocolHandler().resolve(
+				parseInternalUrl("knowledge://record/work/notes/doc-1"),
+				{ cwd: dir },
+			);
+			expect(calls).toHaveLength(1);
+			expect(authHeader(calls[0])).toBe(`Bearer ${TOKEN_VALUE}`);
+			expect(resource.url).toBe("knowledge://record/work/notes/doc-1");
 		});
 	});
 

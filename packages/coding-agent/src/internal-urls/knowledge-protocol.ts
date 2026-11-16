@@ -84,7 +84,10 @@ export class KnowledgeProtocolHandler implements ProtocolHandler {
 			);
 		}
 
-		const token = process.env[config.tokenEnvVar];
+		// The value sent is the value gated: the loader's gate trims (nonEmptyString semantics,
+		// as the deployed reader does), so a padded-but-valid bearer must go out trimmed here
+		// too, or one env var yields two different credentials inside one package.
+		const token = process.env[config.tokenEnvVar]?.trim();
 		if (!token) {
 			return refusal(
 				url,
