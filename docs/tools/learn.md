@@ -9,12 +9,13 @@
 - Managed-skill helper: `packages/coding-agent/src/autolearn/managed-skills.ts`
 - Local memory backend: `packages/coding-agent/src/memory-backend/local-backend.ts`
 - Local lesson persistence: `packages/coding-agent/src/memories/index.ts` (`saveLearnedLesson(...)`)
+- Knowledge-base sink: `packages/coding-agent/src/autolearn/kb-sink.ts` (`saveLessonToKb(...)`, `saveManagedSkillRecordToKb(...)`)
 
 ## Registration / Visibility
 
 - `loadMode = "essential"` and `strict = true`, so the tool remains top-level rather than mounting under `xd://`.
-- Approval is dynamic: a call containing `skill` or `scope: "global"`, or any call while `memory.backend = "local"` or `"memvidkb"`, has `approval = "write"`; any other memory-only Hindsight/Mnemopi call has `approval = "read"`. A `memvidkb` lesson lands in a shared central track, so it carries the same tier as a file write.
-- Registration requires `autolearn.enabled = true` (default `false`) and `memory.backend` equal to `"hindsight"`, `"mnemopi"`, `"local"`, or `"memvidkb"`. Hindsight additionally requires a configured backend (`isHindsightConfigured(loadHindsightConfig(settings))`).
+- Approval is dynamic: a call containing `skill` or `scope: "global"`, or any call while `memory.backend = "local"` or `"memvidkb"`, has `approval = "write"` — a central record mutates state every later project recalls — while any other memory-only Hindsight/Mnemopi call has `approval = "read"`.
+- Registration requires `autolearn.enabled = true` (default `false`) and `memory.backend` in `LEARN_CAPABLE_BACKENDS` (`"hindsight"`, `"mnemopi"`, `"local"`, `"memvidkb"`), exported from `src/tools/learn.ts`. `LearnTool.createIf` and both gates in `src/tools/index.ts` (the `requestedTools` auto-include and `isToolAllowed`) read that one list through `isLearnCapableBackend(...)`: a fourth copy of the list is what would drop the tool from the plan while the factory still builds it, so capture would stop with nothing reddening. Hindsight additionally requires a configured backend (`isHindsightConfigured(loadHindsightConfig(settings))`).
 - Enabled top-level sessions auto-include `learn` in an ordinary explicit tool list. Subagents do not discover or auto-receive it, but may use it when their requested-tools/frontmatter list explicitly includes it.
 - Execution is single-shot and emits no progress updates.
 
@@ -31,6 +32,7 @@
 
 - Lesson only:
    - `content[0].text = "Lesson stored."` or `"Lesson queued for retention."`
+   - `content[0].text = "Lesson stored in the knowledge base."` while `memory.backend = "memvidkb"`.
    - `details = { skill: null }`
 - Lesson plus skill:
    - `content[0].text = "<lesson result>. Created managed skill \"<name>\"."` or `"... Updated ..."`
@@ -43,34 +45,37 @@
 2. `execute(...)` stores the lesson before attempting any skill mutation:
    - Mnemopi: for `scope: "global"`, first resolves `state.getGlobalRetainTarget()`, which throws under `per-project` scoping before anything is stored or any skill is written; then calls `rememberScoped(...)` (with that target for a global lesson) with `source: "coding-agent-learn"`, `importance: 0.8`, `scope: "bank"`, fact and entity extraction enabled, `veracity: "tool"`, `memoryType: "fact"`, and session/cwd/context metadata. A thrown storage error is reported as `Mnemopi did not store the lesson: <reason>`; the return value is not checked.
    - Local backend: calls `localBackend.save(...)`, which normalizes and writes a project-scoped `learned.md`; `stored === 0` is treated as failure.
-   - Local backend: rejects `scope: "global"` with `Global memory scope is not available with the local memory backend.` before storing or writing a skill.
+   - Knowledge-base backend: calls `saveLessonToKb(agentDir, cwd, { memory, context })`, which runs the lesson through the same `normalizeLearnedLesson(...)` chain the file sink uses (neutralize delimiters, then redact secrets per line, then per-field caps) and POSTs one record to the service named by the workspace's `.memvidkb`, with `originActor: "coding-agent-learn"`. `stored === 0` throws the backend's prefixed reason before any skill is written. `learned.md` is never reached on this path: its only writer is `localBackend.save`, which the local branch above owns.
+   - Any backend other than `mnemopi`/`hindsight` — so `local` and `memvidkb`: rejects `scope: "global"` with `Global memory scope is not available with the <backend> memory backend.` before storing or writing a skill, matching the schema, which omits `scope` unless `isGlobalMemoryScopeAvailable(...)` is true.
    - Hindsight: awaits `state.enqueueRetain(toolCallId, [{ content: memory, context, scope }])`, which writes the lesson to the same [durable outbox as retain](./retain.md) before the lesson is reported as queued. A global lesson is retained untagged; `enqueueRetain` throws before queueing or writing a skill while `hindsight.globalScope` is off (`Hindsight global scope is off; set hindsight.globalScope to true to enable it.`), under `per-project` scoping (`Hindsight global scope requires global or per-project-tagged scoping.`), or when the outbox is full or unwritable.
 3. If `skill` is absent, the tool returns after the memory write/queue.
 4. If `skill.action == "create"`, the tool checks the lowercased/validated name against active authored skills. A conflict returns an error result after the lesson has already been stored or queued.
 5. Otherwise, it calls `writeManagedSkill(...)`. Skill-write failure is rethrown as a partial outcome because lesson persistence already happened.
-6. Unlike `manage_skill`, `learn` does not call the session's `refreshSkills` callback after writing. The managed skill is discovered on a later skill refresh/session.
+6. On the knowledge-base backend with `skill`, the backing record is written only after `writeManagedSkill(...)` succeeds, so a record can never assert a skill that was never minted. A refused backing record is thrown as a partial outcome naming both facts.
+7. After a managed-skill write `learn` calls the session's `refreshSkills` callback, as `manage_skill` does; a refresh that throws is reported together with the completed write rather than swallowed.
 
 ## Modes / Variants
 
 - Memory-only lesson capture.
 - Lesson plus managed skill create/update for repeatable procedures worth codifying as `SKILL.md`.
-- Backend-specific persistence: queued Hindsight, scoped Mnemopi SQLite, or project-scoped local `learned.md`.
+- Backend-specific persistence: queued Hindsight, scoped Mnemopi SQLite, project-scoped local `learned.md`, or one knowledge-base record per capture — a fact, plus a backing record for each minted skill.
 - `create` fails if the managed skill file exists; `update` fails if it does not. Same-name in-process mutations are serialized.
 
 ## Side Effects
 
 - Filesystem:
-   - Local backend writes `<agent-dir>/memories/<encoded-cwd>/learned.md`.
+   - Local backend writes `<agent-dir>/memories/<encoded-cwd>/learned.md`. Only the local backend: a `memvidkb` capture writes no memory file, and a `memvidkb` procedure writes only the managed skill below.
    - Managed skills write `<agent-dir>/managed-skills/<sanitized-name>/SKILL.md`; the default agent directory is `~/.omp/agent`.
    - Mnemopi writes its scoped SQLite database.
    - Hindsight writes a private event file under `<agent-dir>/hindsight-outbox/` until the server accepts it.
-- Network: Hindsight queue flushes to the configured server later. Mnemopi can schedule configured embedding/fact-extraction provider work after the synchronous row write; local file-backed storage itself is offline.
+- Network: Hindsight queue flushes to the configured server later. Mnemopi can schedule configured embedding/fact-extraction provider work after the synchronous row write. The knowledge-base backend POSTs the record to the `.memvidkb` `baseUrl` synchronously and keeps nothing locally when that POST fails; local file-backed storage itself is offline.
 - Session state: reads backend state, settings, cwd, and session id. A skill created here is not immediately injected into the active skill list.
 - Background work: Hindsight retention and Mnemopi extraction/embedding can continue after the tool result.
 
 ## Limits & Caps
 
 - Availability requires `autolearn.enabled` plus a supported memory backend; both settings default to disabled/off.
+- Knowledge-base records are bounded by the same per-field ceilings as local lessons, because both sinks take their text through the same `normalizeLearnedText(...)` step (`normalizeLearnedLesson(...)` composes it for the record path); on the knowledge-base path those caps are also the only bound on what is POSTed to the service, which is why they live in the shared helper rather than in the file-only branch.
 - Managed skill names are trimmed and lowercased, then must match `[a-z0-9][a-z0-9-]{0,63}`.
 - Managed descriptions are collapsed to one line and stripped of control/format characters, angle brackets, backticks, and repeated tildes.
 - Final managed `SKILL.md` content, including generated frontmatter and description, is capped at `64_000` UTF-8 bytes.
@@ -82,6 +87,8 @@
 - `Mnemopi backend is not initialised for this session.` when Mnemopi state is missing.
 - `Mnemopi did not store the lesson: <reason>` when the synchronous Mnemopi write throws; the optional skill is not attempted.
 - `Lesson was empty after sanitization; nothing stored.` when local-backend normalization yields no lesson; the optional skill is not attempted.
+- `knowledge_unreachable: …`, `knowledge_invalid_config: … (code TOKEN_ENV_UNSET | CONFIG_NOT_FOUND)`, `knowledge_forbidden: …` or `knowledge_unavailable: …` when the knowledge service is unreachable, unconfigured (no `.memvidkb` governs the workspace, or its bearer env var is unset, empty, or whitespace-only), refused (`.memvidkb` sets `remember = "off"`), or yields `stored === 0`. Nothing is sent, queued, or written locally, and the optional skill is not attempted.
+- `<lesson result>. <Created|Updated> managed skill "<name>", but its knowledge-base backing record was not stored: <reason>` when the `SKILL.md` was minted and only the record was refused — a partial outcome the model is told about, never a silent one.
 - `Hindsight backend is not initialised for this session.` when Hindsight state is missing.
 - Authored-name conflict on `skill.action = "create"` returns `isError: true`, `details = { skill: null, shadowed: true }`, after the lesson succeeds.
 - Managed-skill validation, create/update, safety, or size failures throw `<lesson result>, but the managed skill could not be written: <reason>` after the lesson succeeds.

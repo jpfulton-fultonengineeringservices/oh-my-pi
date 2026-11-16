@@ -1454,6 +1454,32 @@ function normalizeLearnedText(text: string, maxChars: number): string {
 	return boundChars(redactSecrets(neutralizeInjection(text)).trim(), maxChars);
 }
 
+/**
+ * Normalize one `learn` capture for whichever sink the resolved backend selects.
+ *
+ * Both sinks take their text through the same {@link normalizeLearnedText} step this
+ * helper composes — {@link saveLearnedLesson} applies it field-by-field while the
+ * `memvidkb` record writer in `../autolearn/kb-sink` calls this — so a capture can
+ * never be safer on one path than the other. A KB record is recalled and re-injected
+ * into later prompts exactly as the `learned.md` block is, so it earns the same
+ * neutralize-then-redact-then-bound treatment rather than a bare trim.
+ *
+ * @param input - Raw capture fields as the `learn` tool supplied them.
+ * @returns The same shape with `content` and `context` normalized; absent fields
+ * stay absent instead of arriving as empty strings.
+ */
+export function normalizeLearnedLesson(input: MemoryBackendSaveInput): MemoryBackendSaveInput {
+	const content = normalizeLearnedText(input.content, MAX_LEARNED_CONTENT_CHARS);
+	const context =
+		input.context === undefined ? undefined : normalizeLearnedText(input.context, MAX_LEARNED_CONTEXT_CHARS);
+	return {
+		content,
+		...(context === undefined ? {} : { context }),
+		...(input.source === undefined ? {} : { source: input.source }),
+		...(input.importance === undefined ? {} : { importance: input.importance }),
+	};
+}
+
 /** Per-path write chains serializing `learned.md` read-modify-write. */
 const learnedWriteChains = new Map<string, Promise<unknown>>();
 
