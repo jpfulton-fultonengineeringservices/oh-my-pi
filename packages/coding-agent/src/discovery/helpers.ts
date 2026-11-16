@@ -429,6 +429,20 @@ export interface ScanSkillsFromDirOptions {
 	level: "user" | "project";
 	requireDescription?: boolean;
 	/**
+	 * Directory levels below `dir` to scan for `<name>/SKILL.md`. The default `1`
+	 * is the historical single level (`<dir>/<name>/SKILL.md`) that every provider
+	 * whose upstream documents a flat layout relies on (`.github/skills`, custom
+	 * directories, plugin package `skills/`). Higher values additionally descend
+	 * into *group* directories, and only into those: a directory is descended into
+	 * exactly when it has no `SKILL.md` of its own, because a directory that owns
+	 * one IS a skill — its `references/`, `templates/` and `assets/`
+	 * subdirectories are then never listed and so can never be mistaken for child
+	 * skills. A group name is not part of a skill's invocation name; only the
+	 * immediate skill directory (or its frontmatter `name`) is. Native OMP roots
+	 * pass {@link MAX_SKILL_NESTING_DEPTH}.
+	 */
+	maxDepth?: number;
+	/**
 	 * When true, treat a `SKILL.md` sitting directly under `dir` as a single skill in addition to
 	 * scanning `<dir>/<name>/SKILL.md` children. Matches the Claude plugin manifest convention
 	 * that lets a skill path point at a directory containing `SKILL.md` directly (e.g.
@@ -462,6 +476,16 @@ export function compareSkillOrder(aName: string, aPath: string, bName: string, b
 	return cmp(aPath, bPath);
 }
 
+/**
+ * Deepest directory level below a skills root that {@link scanSkillsFromDir} walks
+ * when `maxDepth` asks it to follow group directories: level 1 is the historical
+ * `<dir>/<name>/SKILL.md`, level 2 `<dir>/<group>/<name>/SKILL.md`, and so on. The
+ * bound is what makes the descent safe to enable on a directory the operator does
+ * not fully control — a pathological tree costs a bounded number of `readdir`
+ * calls per branch instead of an unbounded walk.
+ */
+export const MAX_SKILL_NESTING_DEPTH = 5;
+
 export async function scanSkillsFromDir(
 	_ctx: LoadContext,
 	options: ScanSkillsFromDirOptions,
@@ -469,16 +493,18 @@ export async function scanSkillsFromDir(
 	const items: Skill[] = [];
 	const warnings: string[] = [];
 	const { dir, level, providerId, requireDescription = false } = options;
+	const maxDepth = Math.max(1, Math.trunc(options.maxDepth ?? 1));
+	// Resolved scan root, the reference for both descent guards below. A root that
+	// cannot be resolved gets no descent at all: a scan that cannot locate itself
+	// on disk has no business walking a subtree of it.
+	const rootRealPath = await realpathIfExists(dir);
+	// Realpaths of directories already listed. `readdir` reports a symlink as an
+	// ordinary entry, so a link pointing at an ancestor — or at a sibling that
+	// links back — would otherwise be re-listed until the depth bound, duplicating
+	// every skill beneath it.
+	const listedDirectories = new Set<string>();
+	if (rootRealPath !== null) listedDirectories.add(rootRealPath);
 
-	let entries: fs.Dirent[];
-	try {
-		entries = await fs.promises.readdir(dir, { withFileTypes: true });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			warnings.push(`Failed to read skills directory: ${dir} (${String(error)})`);
-		}
-		return { items, warnings };
-	}
 	const loadSkill = async (skillPath: string) => {
 		try {
 			const content = await readFile(skillPath);
@@ -512,6 +538,55 @@ export async function scanSkillsFromDir(
 		}
 	};
 
+	/**
+	 * List the skills in `scanDir` (a level of the tree under `dir`) and descend
+	 * into its group directories. `depth` is that level's distance from `dir`, so
+	 * the top-level call at depth 1 finds `<dir>/<name>/SKILL.md`.
+	 */
+	const scanLevel = async (scanDir: string, depth: number): Promise<void> => {
+		let entries: fs.Dirent[];
+		try {
+			entries = await fs.promises.readdir(scanDir, { withFileTypes: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				warnings.push(`Failed to read skills directory: ${scanDir} (${String(error)})`);
+			}
+			return;
+		}
+		const levelWork: Promise<void>[] = [];
+		for (const entry of entries) {
+			if (entry.name.startsWith(".")) continue;
+			if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+			const entryDir = path.join(scanDir, entry.name);
+			const skillPath = path.join(entryDir, "SKILL.md");
+			// The predicate that keeps the descent honest: a directory owning a
+			// SKILL.md IS a skill, so its own references/, templates/, assets/ and
+			// scripts/ subdirectories are never listed and can never be read as a set
+			// of child skills. Only a directory WITHOUT one is a candidate group.
+			if (fs.existsSync(skillPath)) {
+				levelWork.push(loadSkill(skillPath));
+				continue;
+			}
+			if (depth >= maxDepth || rootRealPath === null) continue;
+			const groupRealPath = await realpathIfExists(entryDir);
+			if (groupRealPath === null) continue;
+			// A group resolving outside the scan root is not this root's to read: one
+			// symlink must not turn a skills directory into a reader for an arbitrary
+			// subtree. Reaching an already-listed directory is the cycle guard doing
+			// its job, not a defect, so that case stays silent.
+			if (!pathIsWithin(rootRealPath, groupRealPath)) {
+				warnings.push(
+					`Skipping skill group that resolves outside its skills root: ${entryDir} -> ${groupRealPath}`,
+				);
+				continue;
+			}
+			if (listedDirectories.has(groupRealPath)) continue;
+			listedDirectories.add(groupRealPath);
+			levelWork.push(scanLevel(entryDir, depth + 1));
+		}
+		await Promise.all(levelWork);
+	};
+
 	const work: Promise<void>[] = [];
 	if (options.includeSelf) {
 		const selfSkillPath = path.join(dir, "SKILL.md");
@@ -519,14 +594,7 @@ export async function scanSkillsFromDir(
 			work.push(loadSkill(selfSkillPath));
 		}
 	}
-	for (const entry of entries) {
-		if (entry.name.startsWith(".")) continue;
-		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-		const skillPath = path.join(dir, entry.name, "SKILL.md");
-		if (fs.existsSync(skillPath)) {
-			work.push(loadSkill(skillPath));
-		}
-	}
+	work.push(scanLevel(dir, 1));
 	await Promise.all(work);
 
 	// Deterministic ordering: async file reads complete nondeterministically, so sort after loading.
@@ -1054,6 +1122,35 @@ export function isUserConfigRoot(root: string): boolean {
 		configDir === normalizePathForComparison(path.join(os.homedir(), getConfigDirName())) ||
 		configDir === normalizePathForComparison(path.dirname(getPluginsDir()))
 	);
+}
+
+/**
+ * Whether `agentDir` belongs to the user config layout under `home` — that is,
+ * whether `~/.omp` (more precisely `<home>/<configDirName>`) is the active config
+ * root rather than a leftover the session has been redirected away from. Roots
+ * that live directly in the config root, such as the profile-independent
+ * `~/.omp/skills`, are loaded only while this holds: a profile switch,
+ * `PI_CODING_AGENT_DIR`, or an SDK session carrying its own `agentDir` redirects
+ * user config entirely, and reading the operator's config root anyway would
+ * resurrect files isolation exists to exclude.
+ *
+ * Lexical on purpose. Operators routinely symlink the agent dir at a vendored
+ * checkout (`~/.omp/agent` → a git worktree), and a realpath comparison would call
+ * that sanctioned layout "elsewhere", disabling the shared root for exactly the
+ * operators who depend on that symlink.
+ *
+ * `<home>/<configDirName>` is `getBaseConfigRoot()`'s expression with the
+ * session's own `home` substituted, so a session carrying a different `home`
+ * relocates the shared root along with every other user path it resolves.
+ *
+ * Strict, not at-or-below: an `agentDir` that *is* the config root (an exotic
+ * `PI_CODING_AGENT_DIR=<home>/.omp`) returns false, because its own `skills` child
+ * already IS the shared root and a second scan of the same directory would only
+ * duplicate every item in it.
+ */
+export function isAgentDirUnderHomeConfigRoot(home: string, agentDir: string): boolean {
+	const configRoot = path.join(home, getConfigDirName());
+	return isWithin(configRoot, agentDir) && !samePath(configRoot, agentDir);
 }
 
 /**

@@ -280,18 +280,19 @@ Native provider (`id: native`) reads native config from:
 
 - project: `<cwd>/.omp/...`
 - user: `~/.omp/agent/...`
+- user, skills only: `~/.omp/skills/...` — profile-independent and shared by every profile. It counts as a root only while `~/.omp` is the active config layout, so a profile switch, `PI_CODING_AGENT_DIR`, or an SDK session carrying its own `agentDir` redirects user config and leaves it unread.
 
 ### Directory admission rules
 
 - Slash commands, directory rules, prompts, instructions, hooks, tools, extensions, extension modules, and settings use a project/user root only when the root directory exists and is non-empty.
-- Skills scan `<ancestor>/.omp/skills` for each ancestor from the current working directory up to the repo root/home boundary, plus `~/.omp/agent/skills`, without requiring the root `.omp` directory itself to be non-empty.
+- Skills scan `<ancestor>/.omp/skills` for each ancestor from the current working directory up to the repo root/home boundary, plus `~/.omp/agent/skills` and the profile-independent `~/.omp/skills`, without requiring the root `.omp` directory itself to be non-empty. Each of those roots is also scanned through *group* directories — directories without a `SKILL.md` of their own — down to five levels, so `<root>/team/domain/SKILL.md` resolves; a directory that owns a `SKILL.md` is a skill and is never listed further. See [`docs/skills.md`](./skills.md) for the layout and the symlink guards.
 - `SYSTEM.md`, `SYSTEM_TEMPLATE.md`, `RULES.md`, and `.omp/AGENTS.md` read user-level files directly and use the nearest non-empty ancestor `.omp` directory for project files. Project system-prompt entries load before user entries. `RULES.md` becomes an always-apply sticky rule. See [`docs/system-prompt-customization.md`](./system-prompt-customization.md) for the full `SYSTEM.md` / `APPEND_SYSTEM.md` contract.
 - MCP does not use the non-empty-root admission helper. It reads project `.omp/mcp.json` then `.omp/.mcp.json`, followed by user `mcp.json` then `.mcp.json`, directly.
 
 ### Scope-specific loading
 
-- Skills: `<ancestor>/.omp/skills/*/SKILL.md` and `~/.omp/agent/skills/*/SKILL.md`
-- Managed skills: `~/.omp/agent/managed-skills/*/SKILL.md`, through a separate priority-5 provider; authored skills from any other provider win name collisions. Discovery is unconditional; `autolearn.enabled` gates writing/nudging, not loading.
+- Skills: `<ancestor>/.omp/skills/**/SKILL.md`, `~/.omp/agent/skills/**/SKILL.md` and `~/.omp/skills/**/SKILL.md` (`**` is bounded at five levels and only traverses group directories; see above).
+- Managed skills: `~/.omp/agent/managed-skills/**/SKILL.md`, through a separate priority-5 provider; authored skills from any other provider win name collisions. Discovery is unconditional; `autolearn.enabled` gates writing/nudging, not loading.
 - Slash commands: `commands/*.md`
 - Rules: `rules/*.{md,mdc}` plus top-level `RULES.md`
 - Prompts: `prompts/*.md`

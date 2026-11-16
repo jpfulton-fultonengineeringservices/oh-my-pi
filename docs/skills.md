@@ -24,28 +24,34 @@ The capability validator only requires `name` and `path`; individual providers i
 
 ### Directory layout
 
-For conventional provider roots (native/Claude/Codex/Agents/plugins), skills are discovered as **one level under `skills/`**:
+Native OMP roots (`<ancestor>/.omp/skills`, `~/.omp/agent/skills`, `~/.omp/skills`, `~/.omp/agent/managed-skills`) discover a skill at **any level down to `MAX_SKILL_NESTING_DEPTH` (5)**, so a skills root may organize skills into group directories:
+
+- `<skills-root>/<skill-name>/SKILL.md`
+- `<skills-root>/<group>/<skill-name>/SKILL.md` … nested up to five levels
+
+A directory is descended into exactly when it has **no `SKILL.md` of its own**: a directory that owns one *is* a skill, so its `references/`, `templates/`, `assets/` and `scripts/` subdirectories are never listed and can never be read as a set of child skills. Group directories are organization only — a group name is never part of a skill's invocation name; only the immediate skill directory (or its frontmatter `name`) is. Two guards bound the walk: a group that resolves (through a symlink) to a directory outside its skills root is skipped with a warning, and a directory already listed is never listed again, so aliasing or self-referential symlinks terminate instead of re-emitting every skill below them.
+
+Every other root — the Claude/Codex/Agents/opencode/claude-plugins providers, `github` (`.github/skills`), `omp-plugins`, and `skills.customDirectories` — keeps the **one-level, non-recursive** layout those upstreams document:
 
 - `<skills-root>/<skill-name>/SKILL.md`
 
-Nested patterns like `<skills-root>/group/<skill>/SKILL.md` are not discovered recursively. The Claude-plugin provider also accepts manifest-declared skill directories containing `SKILL.md` directly, in addition to their immediate children. Agent Plugins packages use only the fixed `skills/<name>/SKILL.md` layout; registry-installed Skillshare packages have a root `SKILL.md`.
-
-For `skills.customDirectories`, scanning uses the same non-recursive layout (`*/SKILL.md`).
-
 ```text
-Provider-discovered layout (non-recursive under skills/):
+Native OMP root (groups followed):              Conventional provider root / customDirectories:
 
-<root>/skills/
-  ├─ postgres/
-  │   └─ SKILL.md      ✅ discovered
-  ├─ pdf/
-  │   └─ SKILL.md      ✅ discovered
-  └─ team/
-      └─ internal/
-          └─ SKILL.md  ❌ not discovered by provider loaders
+<root>/skills/                                  <root>/skills/
+  ├─ postgres/                                  ├─ postgres/
+  │   ├─ SKILL.md      ✅ discovered             │   ├─ SKILL.md      ✅ discovered
+  │   └─ references/                             │   └─ references/
+  │       └─ *.md      not listed (part of       │       └─ *.md      not listed
+  │                  postgres, not skills)       │
+  └─ team/                                      └─ team/
+      └─ internal/                                  └─ internal/
+          └─ SKILL.md  ✅ discovered                    └─ SKILL.md  ❌ not discovered
 
-Custom-directory scanning is also non-recursive, so nested paths are ignored unless you point `customDirectories` at that nested parent.
+Custom-directory scanning is non-recursive, so nested paths are ignored there unless you point `customDirectories` at that nested parent.
 ```
+
+The Claude-plugin provider also accepts manifest-declared skill directories containing `SKILL.md` directly, in addition to their immediate children. Agent Plugins packages use only the fixed `skills/<name>/SKILL.md` layout; registry-installed Skillshare packages have a root `SKILL.md`. A nested skill pack whose own documentation declares a flat layout is unaffected either way: `<dir>/<name>/SKILL.md` resolves identically at level 1.
 
 ### `SKILL.md` frontmatter
 
@@ -88,7 +94,7 @@ Provider ordering is priority-first (higher wins), then registration order for t
 
 Current registered skill providers:
 
-1. `native` (priority 100) — `.omp` user/project skills via `src/discovery/builtin.ts`
+1. `native` (priority 100) — `.omp` user/project skills via `src/discovery/builtin.ts`. Roots, in scan order: each `<ancestor>/.omp/skills` from `cwd` up to the repo-root/home boundary, then `~/.omp/agent/skills` (the active profile's agent dir), then `~/.omp/skills` — the profile-independent root shared by every profile, admitted only while `~/.omp` is the active config layout (`isAgentDirUnderHomeConfigRoot`); a profile switch, `PI_CODING_AGENT_DIR`, or an SDK session carrying its own `agentDir` redirects user config and drops it. All roots follow group directories to `MAX_SKILL_NESTING_DEPTH`. The user roots are scanned in that order, so a profile-specific skill wins the first-wins name dedup against a same-named `~/.omp/skills` skill.
 2. `skillshare` (priority 95) — packages pinned in project `.omp/skills.lock.json` or the user agent directory's `skills.lock.json`, loaded from the Skillshare store; authored skills still outrank these on name collisions
 3. `omp-plugins` (priority 90) — `skills/` bundled next to extension packages loaded through `extensions:`, `--extension`/`-e`, or installed plugins under `~/.omp/plugins/node_modules`
 4. `claude` (priority 80)
@@ -99,7 +105,7 @@ Current registered skill providers:
    - `codex`
 7. `opencode` (priority 55)
 8. `github` (priority 30) — `.github/skills/<name>/SKILL.md` (GitHub Agent Skills layout, project-only)
-9. `omp-managed` (priority 5) — auto-learn skills under `~/.omp/agent/managed-skills`, registered in `src/discovery/builtin.ts` and discovered unconditionally (only writing/nudging is gated by `autolearn.enabled`); always defers to a same-named authored skill
+9. `omp-managed` (priority 5) — auto-learn skills under `~/.omp/agent/managed-skills`, registered in `src/discovery/builtin.ts` and discovered unconditionally (only writing/nudging is gated by `autolearn.enabled`); follows group directories to the same depth bound, and always defers to a same-named authored skill
 
 Capability dedup key is skill name; the first item with a given name wins in the deduped `items` view. `loadSkills()` resolves same-name collisions itself (see "Collision and duplicate handling").
 
@@ -270,5 +276,5 @@ MCP-advertised skills:
 - Put each skill in its own directory: `<skills-root>/<skill-name>/SKILL.md`
 - Always include explicit `name` and `description` frontmatter
 - Keep referenced assets under the same skill directory and access with `skill://<name>/...`
-- For nested taxonomy (`team/domain/skill`), point `skills.customDirectories` to the nested parent directory; scanning itself remains non-recursive
+- For a nested taxonomy (`team/domain/skill`), a native OMP root discovers it directly (groups are followed to `MAX_SKILL_NESTING_DEPTH`); under another provider's root or `skills.customDirectories`, whose scanning remains non-recursive, point `customDirectories` at the nested parent instead
 - On a name collision, the higher-precedence skill keeps the bare name; identical copies collapse, and differing copies remain reachable under a namespace.
