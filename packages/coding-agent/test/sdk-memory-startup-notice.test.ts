@@ -95,7 +95,9 @@ describe("createAgentSession memory startup failure surface", () => {
 	function memoryError(notices: CapturedNotice[]): CapturedNotice | undefined {
 		return notices.find(
 			notice =>
-				notice.level === "error" && notice.source === "Memory" && notice.message.startsWith("Failed to start the memory backend:"),
+				notice.level === "error" &&
+				notice.source === "Memory" &&
+				notice.message.startsWith("Failed to start the memory backend:"),
 		);
 	}
 
@@ -195,5 +197,4 @@ describe("createAgentSession memory startup failure surface", () => {
 		});
 		expect(memoryError(notices)).toBeUndefined();
 	});
-
 });

@@ -1,14 +1,11 @@
-import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { sharpshooterBackend } from "@oh-my-pi/pi-coding-agent/sharpshooter/backend";
 import { sharpshooterBankDir } from "@oh-my-pi/pi-coding-agent/sharpshooter/paths";
-import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 
 const tempDirs: string[] = [];
@@ -25,8 +22,6 @@ async function makeTempDir(name: string): Promise<string> {
 }
 
 describe("sharpshooter memory backend", () => {
-	;
-
 	it("injects only populated project decision files", async () => {
 		const root = await makeTempDir("sharpshooter-backend");
 		const agentDir = path.join(root, "agent");
@@ -52,6 +47,4 @@ describe("sharpshooter memory backend", () => {
 		expect(instructions).toContain("## product");
 		expect(instructions).toContain("## style");
 	});
-
-	;
 });

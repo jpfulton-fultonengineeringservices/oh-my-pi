@@ -839,8 +839,6 @@ describe("global memory scope exposure", () => {
 		expectOffered(makeSession(memorySettings("mnemopi", { "mnemopi.scoping": scoping })), offered);
 	});
 
-	;
-
 	it.each([
 		["off", { scoping: "per-project-tagged" }, false],
 		["on under per-project", { scoping: "per-project", globalScope: true }, false],
@@ -892,10 +890,6 @@ describe("global memory scope exposure", () => {
 		expect(retain.approval({ items: [{ content: "x", scope: "project" }] })).toBe("read");
 	});
 });
-
-;
-
-;
 
 describe("Mnemopi backend lifecycle", () => {
 	beforeEach(() => {

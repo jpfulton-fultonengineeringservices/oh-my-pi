@@ -69,19 +69,16 @@ describe("autolearn tool gating", () => {
 		// taskDepth > 0: the controller never runs here, so a subagent's explicit
 		// whitelist must not be silently widened with write-capable tools.
 		const sub = (
-			await createTools(
-				makeSession({ "autolearn.enabled": true, "memory.backend": "memvidkb" }, { taskDepth: 1 }),
-				["read"],
-			)
+			await createTools(makeSession({ "autolearn.enabled": true, "memory.backend": "memvidkb" }, { taskDepth: 1 }), [
+				"read",
+			])
 		).map(t => t.name);
 		expect(sub).not.toContain("manage_skill");
 		expect(sub).not.toContain("learn");
 
 		// Nor via discovery (no explicit list) at depth.
 		const subDiscovered = (
-			await createTools(
-				makeSession({ "autolearn.enabled": true, "memory.backend": "memvidkb" }, { taskDepth: 1 }),
-			)
+			await createTools(makeSession({ "autolearn.enabled": true, "memory.backend": "memvidkb" }, { taskDepth: 1 }))
 		).map(t => t.name);
 		expect(subDiscovered).not.toContain("manage_skill");
 		expect(subDiscovered).not.toContain("learn");
@@ -90,10 +87,10 @@ describe("autolearn tool gating", () => {
 	it("allows the tools in a subagent when explicitly requested in toolNames", async () => {
 		// Frontmatter tools: list overrides the taskDepth gate.
 		const sub = (
-			await createTools(
-				makeSession({ "autolearn.enabled": true, "memory.backend": "memvidkb" }, { taskDepth: 1 }),
-				["manage_skill", "learn"],
-			)
+			await createTools(makeSession({ "autolearn.enabled": true, "memory.backend": "memvidkb" }, { taskDepth: 1 }), [
+				"manage_skill",
+				"learn",
+			])
 		).map(t => t.name);
 		expect(sub).toContain("manage_skill");
 		expect(sub).toContain("learn");
@@ -194,5 +191,3 @@ describe("manage_skill execute", () => {
 		expect(await Bun.file(path.join(getManagedSkillsDir(), "demo", "SKILL.md")).exists()).toBe(false);
 	});
 });
-
-;
