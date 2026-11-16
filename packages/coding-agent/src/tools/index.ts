@@ -63,7 +63,7 @@ import { GrepTool } from "./grep";
 import { IdaTool } from "./ida";
 import { isIrcEnabled } from "../irc/messaging";
 import { FindTool, isFindEnabled } from "./jfind";
-import { LearnTool } from "./learn";
+import { isLearnCapableBackend, LearnTool } from "./learn";
 import { ManageSkillTool } from "./manage-skill";
 import { MemoryEditTool } from "./memory-edit";
 import { MemoryListTool } from "./memory-list";
@@ -773,10 +773,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		// tool whitelist must never be silently widened with write-capable tools.
 		if (cfgAutolearnEnabled.get(session.settings) && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
-			if (
-				["hindsight", "mnemopi", "local", "memvidkb"].includes(cfgMemoryBackend.get(session.settings)) &&
-				!requestedTools.includes("learn")
-			) {
+			if (isLearnCapableBackend(cfgMemoryBackend.get(session.settings)) && !requestedTools.includes("learn")) {
 				requestedTools.push("learn");
 			}
 		}
@@ -842,7 +839,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			return (
 				cfgAutolearnEnabled.get(session.settings) &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined) &&
-				["hindsight", "mnemopi", "local", "memvidkb"].includes(cfgMemoryBackend.get(session.settings))
+				isLearnCapableBackend(cfgMemoryBackend.get(session.settings))
 			);
 		}
 		if (name === "task") {

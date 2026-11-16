@@ -1,11 +1,12 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { saveLessonToKb, saveManagedSkillRecordToKb } from "../autolearn/kb-sink";
 import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { localBackend } from "../memory-backend/local-backend";
-import { memvidkbBackend } from "../memvidkb/backend";
+import type { MemoryBackendId } from "../memory-backend/types";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -41,11 +42,32 @@ type LearnSchema = typeof learnSchemaBase | typeof learnSchemaWithScope;
 export type LearnParams = typeof learnSchemaWithScope.infer;
 
 /**
+ * Backends the `learn` tool can actually store to — each has a real sink in
+ * {@link LearnTool.execute}: `mnemopi` SQLite, `local` `learned.md`, `hindsight` the
+ * remote outbox, `memvidkb` a record in the knowledge service.
+ *
+ * Single source of truth on purpose. The tool's own factory and BOTH gates in
+ * `tools/index.ts` (the `requestedTools` force-include and `isToolAllowed`) read this
+ * one list, because drift between them is silent in the worst way: `learn` is simply
+ * never constructed, so auto-learn captures nothing and nothing reddens.
+ */
+export const LEARN_CAPABLE_BACKENDS: readonly MemoryBackendId[] = ["hindsight", "mnemopi", "local", "memvidkb"];
+
+/**
+ * Whether `learn` may be offered for `backend`. Every gate calls this rather than
+ * re-literalising the list; see {@link LEARN_CAPABLE_BACKENDS} for why that matters.
+ */
+export function isLearnCapableBackend(backend: MemoryBackendId): boolean {
+	return LEARN_CAPABLE_BACKENDS.includes(backend);
+}
+
+/**
  * Orchestrating "learn" tool: persists a lesson to long-term memory and,
  * given a `skill` payload, mints/enhances a managed skill via the shared
- * `writeManagedSkill` primitive. Gated behind `autolearn.enabled` plus a live
- * memory backend — `hindsight`/`mnemopi` (remote/SQLite) or `local` (the
- * file-based rollout backend, where lessons append to `learned.md`).
+ * `writeManagedSkill` primitive. Gated behind `autolearn.enabled` plus a memory
+ * backend with a sink — `hindsight`/`mnemopi` (remote/SQLite), `local` (the
+ * file-based rollout backend, where lessons append to `learned.md`), or `memvidkb`
+ * (a record in the knowledge service; `learned.md` is never written on that path).
  */
 export class LearnTool implements AgentTool<LearnSchema> {
 	readonly name = "learn";
@@ -56,8 +78,11 @@ export class LearnTool implements AgentTool<LearnSchema> {
 	readonly approval = (args: unknown) => {
 		const params = args as Partial<LearnParams>;
 		const backend = cfgMemoryBackend.get(this.session.settings);
-		const needsWrite = params.skill || params.scope === "global" || backend === "local" || backend === "memvidkb";
-		return needsWrite ? "write" : "read";
+		// `memvidkb` included: a central record mutates shared state every project
+		// recalls, so it is a write even when the payload is only a lesson.
+		return params.skill || params.scope === "global" || backend === "local" || backend === "memvidkb"
+			? "write"
+			: "read";
 	};
 	readonly label = "Learn";
 	get description(): string {
@@ -75,8 +100,7 @@ export class LearnTool implements AgentTool<LearnSchema> {
 	static createIf(session: ToolSession): LearnTool | null {
 		if (!cfgAutolearnEnabled.get(session.settings)) return null;
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "local" && backend !== "memvidkb")
-			return null;
+		if (!isLearnCapableBackend(backend)) return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new LearnTool(session);
 	}
@@ -131,17 +155,24 @@ export class LearnTool implements AgentTool<LearnSchema> {
 				throw new Error("Lesson was empty after sanitization; nothing stored.");
 			}
 		} else if (backend === "memvidkb") {
-			const result = await memvidkbBackend.save(
-				{ agentDir: this.session.settings.getAgentDir(), cwd: this.session.cwd },
-				{ content: params.memory, context: params.context, source: "coding-agent-learn", importance: 0.8 },
-			);
-			// A refused or unreachable service stored nothing: throw so the skill minting
-			// below never runs for a lesson that was never kept.
+			// The record is the capture's first write, so a refused or unreachable KB
+			// throws here — before any managed skill is minted — and an outage can never
+			// leave a skill file on disk backing a lesson nobody stored. `learned.md` is
+			// never reached on this path: its writer `saveLearnedLesson` has exactly one
+			// caller, `localBackend.save`, which the `local` branch above owns.
+			const result = await saveLessonToKb(this.session.settings.getAgentDir(), this.session.cwd, {
+				memory: params.memory,
+				...(params.context === undefined ? {} : { context: params.context }),
+			});
 			if (result.stored === 0) {
-				throw new Error(`memvidkb did not store the lesson: ${result.message ?? "the service stored nothing"}`);
+				throw new Error(result.message ?? "Knowledge base did not store the lesson; nothing was sent.");
 			}
+			// The service names the record it accepted, so the model is told which
+			// record backs the lesson rather than only that something was stored.
 			const recordId = result.ids?.[0];
-			if (recordId) memoryMessage = `Lesson stored (id ${recordId})`;
+			memoryMessage = recordId
+				? `Lesson stored in the knowledge base (id ${recordId})`
+				: "Lesson stored in the knowledge base";
 		} else {
 			const state = this.session.getHindsightSessionState?.();
 			if (!state) {
@@ -187,6 +218,22 @@ export class LearnTool implements AgentTool<LearnSchema> {
 				throw new Error(`${memoryMessage}, but the managed skill could not be written: ${reason}`);
 			}
 			const verb = params.skill.action === "create" ? "Created" : "Updated";
+			// A KB-backed skill's record asserts that a skill of this name exists, so it
+			// is written only now that the file does. A refusal here is a partial outcome
+			// the model is told about, never a silent capture and never a record
+			// describing a file nobody minted.
+			if (backend === "memvidkb") {
+				const backing = await saveManagedSkillRecordToKb(this.session.settings.getAgentDir(), this.session.cwd, {
+					name: params.skill.name,
+					description: params.skill.description,
+					...(params.context === undefined ? {} : { context: params.context }),
+				});
+				if (backing.stored === 0) {
+					throw new Error(
+						`${memoryMessage}. ${verb} managed skill "${params.skill.name}", but its knowledge-base backing record was not stored: ${backing.message ?? "nothing was sent."}`,
+					);
+				}
+			}
 			try {
 				await this.session.refreshSkills?.();
 			} catch (err) {
