@@ -6,10 +6,19 @@ import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createJsonParsePlugin } from "./json-parse-plugin";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
 
-/** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */
+/**
+ * Dependencies the compiler must leave unresolved instead of embedding: the
+ * natives that are fetched by the on-demand install at first use, plus
+ * `kerberos`, which `@tavily/core`'s axios path `require`s inside a
+ * try/catch and which is deliberately never installed (an optional
+ * MongoDB-auth native). `Bun.build` resolves every non-external import at
+ * compile time, so a guarded `require` of a package no manifest declares
+ * fails the build unless it is listed here.
+ */
 export const COMPILED_EXTERNAL_DEPENDENCIES: readonly string[] = Object.freeze([
 	"@huggingface/transformers",
 	"fastembed",
+	"kerberos",
 	"onnxruntime-node",
 ]);
 
