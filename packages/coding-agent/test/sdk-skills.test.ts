@@ -351,6 +351,46 @@ This skill is added after session creation.
 		const originalAgentDir = getAgentDir();
 		const managedAgentDir = path.join(tempHomeDir, ".omp", "agent");
 		setAgentDir(managedAgentDir);
+		// `memvidkb` is the only learn-capable backend, so this arm needs the knowledge service
+		// reachable: a mint whose backing record is refused is an error, not a success. In-process
+		// stub on an ephemeral port (the pattern from test/autolearn-learn-memvidkb.test.ts),
+		// configured through a real `.memvidkb` in the session's workspace.
+		const kbTokenEnv = "OMP_SDK_SKILLS_KB_TOKEN";
+		process.env[kbTokenEnv] = "sdk-skills-test-bearer";
+		const kbServer = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(request) {
+				const url = new URL(request.url);
+				await request.text();
+				if (url.pathname === "/healthz") {
+					return new Response("ok", { headers: { "content-type": "text/plain" } });
+				}
+				return Response.json({
+					id: "rec-1",
+					uri: "mv2://dev/rec-1",
+					frameId: "frame-1",
+					track: "dev",
+					title: null,
+					tags: [],
+					originActor: "fulton",
+					capturedAt: "2026-11-16T04:00:00Z",
+					derivedFrom: null,
+				});
+			},
+		});
+		await Bun.write(
+			path.join(tempDir, ".memvidkb"),
+			JSON.stringify({
+				version: 1,
+				context: "fulton",
+				baseUrl: `http://127.0.0.1:${kbServer.port}`,
+				tokenEnvVar: kbTokenEnv,
+				providers: ["litellm"],
+				tracks: ["dev"],
+				remember: "on",
+			}),
+		);
 		const settings = Settings.isolated({
 			"skills.enabled": true,
 			"skills.enableCodexUser": false,
@@ -395,6 +435,9 @@ This skill is added after session creation.
 		} finally {
 			await session.dispose();
 			setAgentDir(originalAgentDir);
+			kbServer.stop();
+			delete process.env[kbTokenEnv];
+			fs.rmSync(path.join(tempDir, ".memvidkb"), { force: true });
 		}
 	});
 

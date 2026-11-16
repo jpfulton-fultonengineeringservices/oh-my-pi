@@ -11,8 +11,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent/memories";
 import { localBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/local-backend";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
@@ -359,42 +357,12 @@ describe("learn tool (local backend)", () => {
 		await removeWithRetries(tmp);
 	});
 
-	function localSession(): ToolSession {
-		const settings = Settings.isolated({ "autolearn.enabled": true, "memory.backend": "local" });
-		spyOn(settings, "getAgentDir").mockReturnValue(agentDir);
-		// Settings pinned elsewhere (embedded host): lessons must follow the session cwd.
-		spyOn(settings, "getCwd").mockReturnValue(path.join(tmp, "host"));
-		return {
-			cwd: projCwd,
-			hasUI: false,
-			skipPythonPreflight: true,
-			getSessionFile: () => null,
-			getSessionSpawns: () => "*",
-			settings,
-		};
-	}
-
-	it("tiers the local save as a write approval even without a skill payload", () => {
-		expect(new LearnTool(localSession()).approval({ memory: "x" })).toBe("write");
-	});
-
-	it("execute writes the lesson to learned.md", async () => {
-		await new LearnTool(localSession()).execute("1", { memory: "A local tool lesson" });
-		expect(await Bun.file(learnedFile).text()).toContain("- A local tool lesson");
-	});
-
-	it("rejects a global lesson without creating learned.md", async () => {
-		await expect(
-			new LearnTool(localSession()).execute("local-global", {
-				memory: "A cross-project lesson must not become project-local.",
-				scope: "global",
-			}),
-		).rejects.toThrow(/not available with the local memory backend/i);
-		expect(await Bun.file(learnedFile).exists()).toBe(false);
-	});
-
-	it("execute throws when the lesson is empty after sanitization", async () => {
-		await expect(new LearnTool(localSession()).execute("2", { memory: "   " })).rejects.toThrow(/empty/i);
-		expect(await Bun.file(learnedFile).exists()).toBe(false);
-	});
+	// The `learn` tool's local-sink arms came out with the backend: a retired id no longer
+	// mounts the tool, and `execute` resolves through the selector and refuses before any
+	// writer runs, so these four could only pass by driving a sink no config can select.
+	// Deleted: "tiers the local save as a write approval even without a skill payload",
+	// "execute writes the lesson to learned.md", "rejects a global lesson without creating
+	// learned.md", "execute throws when the lesson is empty after sanitization". The refusal
+	// itself is covered in test/autolearn-learn-memvidkb.test.ts, "refuses a retired local
+	// config and mints nothing".
 });
