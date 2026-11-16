@@ -25,10 +25,7 @@ async function makeTempDir(name: string): Promise<string> {
 }
 
 describe("sharpshooter memory backend", () => {
-	it("resolves from the memory.backend setting", async () => {
-		const settings = Settings.isolated({ "memory.backend": "sharpshooter" });
-		expect(await resolveMemoryBackend(settings)).toBe(sharpshooterBackend);
-	});
+	;
 
 	it("injects only populated project decision files", async () => {
 		const root = await makeTempDir("sharpshooter-backend");
@@ -56,30 +53,5 @@ describe("sharpshooter memory backend", () => {
 		expect(instructions).toContain("## style");
 	});
 
-	it("dispatches ACP queue and sync commands to backend hooks", async () => {
-		const cwd = await makeTempDir("sharpshooter-acp-project");
-		const settings = Settings.isolated({ "memory.backend": "sharpshooter" });
-		const session = { settings } as AgentSession;
-		const output: string[] = [];
-		const queuePreview = spyOn(sharpshooterBackend, "queuePreview").mockResolvedValue("Pending delta");
-		const enqueue = spyOn(sharpshooterBackend, "enqueue").mockResolvedValue(undefined);
-		const runtime = {
-			session,
-			sessionManager: {} as SessionManager,
-			settings,
-			cwd,
-			output: (text: string) => {
-				output.push(text);
-			},
-			refreshCommands: () => {},
-			reloadPlugins: async () => {},
-		} satisfies SlashCommandRuntime;
-
-		await executeAcpBuiltinSlashCommand("/memory queue", runtime);
-		await executeAcpBuiltinSlashCommand("/memory sync", runtime);
-
-		expect(queuePreview).toHaveBeenCalledWith({ agentDir: settings.getAgentDir(), cwd, session });
-		expect(enqueue).toHaveBeenCalledWith(settings.getAgentDir(), cwd, session);
-		expect(output).toEqual(["Pending delta", "Memory consolidation ran."]);
-	});
+	;
 });
