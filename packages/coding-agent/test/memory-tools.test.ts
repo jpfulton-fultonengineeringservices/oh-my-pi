@@ -31,6 +31,7 @@ import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/sessio
 import type { Tool, ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
 import { MemoryEditTool } from "@oh-my-pi/pi-coding-agent/tools/memory-edit";
+import { MemoryListTool } from "@oh-my-pi/pi-coding-agent/tools/memory-list";
 import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall";
 import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
@@ -265,6 +266,41 @@ describe("Mnemopi tool factories", () => {
 		expect(MemoryReflectTool.createIf(localSession)).toBeNull();
 		expect(MemoryEditTool.createIf(makeSession(offSettings))).toBeNull();
 		expect(MemoryEditTool.createIf(makeSession(hindsightSettings))).toBeNull();
+	});
+
+	it("retain/recall/reflect/edit/list factories return tool instances when memory.backend === memvidkb", async () => {
+		// The KB is the backend these verbs were written for, so the gate above is not
+		// "only mnemopi gets tools": a configured KB session gets all five, and `memory_list`
+		// — which has no local equivalent — is offered for the KB and nothing else.
+		const agentDir = TempDir.createSync("@memvidkb-gating-");
+		const originalAgentDir = getAgentDir();
+		try {
+			setAgentDir(agentDir.path());
+			await fs.writeFile(
+				path.join(agentDir.path(), ".memvidkb"),
+				JSON.stringify({
+					schema: 1,
+					baseUrl: "http://127.0.0.1:9",
+					tracks: { kb: { enabled: true, default: true } },
+					consent: { discover: "on", remember: "ask", reflect: "on", share: "off" },
+				}),
+				"utf8",
+			);
+			const session = makeSession(Settings.isolated({ "memory.backend": "memvidkb" }));
+			expect(MemoryRetainTool.createIf(session)).toBeInstanceOf(MemoryRetainTool);
+			expect(MemoryRecallTool.createIf(session)).toBeInstanceOf(MemoryRecallTool);
+			expect(MemoryReflectTool.createIf(session)).toBeInstanceOf(MemoryReflectTool);
+			expect(MemoryEditTool.createIf(session)).toBeInstanceOf(MemoryEditTool);
+			expect(MemoryListTool.createIf(session)).toBeInstanceOf(MemoryListTool);
+			expect(
+				MemoryListTool.createIf(
+					makeSession(Settings.isolated({ "memory.backend": "off", "memories.enabled": false })),
+				),
+			).toBeNull();
+		} finally {
+			setAgentDir(originalAgentDir);
+			await agentDir.remove();
+		}
 	});
 
 	it("retain/recall/reflect/edit factories return tool instances when memory.backend === mnemopi", () => {

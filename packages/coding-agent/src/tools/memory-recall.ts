@@ -67,7 +67,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				const result = await memvidkbBackend.search(
 					{
 						agentDir: this.session.settings.getAgentDir(),
-						cwd: this.session.sessionManager.getCwd(),
+						cwd: this.session.cwd,
 					},
 					params.query,
 					{ signal },

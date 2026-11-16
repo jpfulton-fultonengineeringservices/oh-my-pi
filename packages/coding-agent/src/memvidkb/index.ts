@@ -17,10 +17,8 @@ export {
 	HEALTH_TIMEOUT_MS,
 	HTTP_TIMEOUT_MS,
 	allowedValue,
-	eraseDocument,
 	findTrack,
 	health,
-	inspectRecord,
 	listRecords,
 	readRows,
 	readShape,
@@ -28,7 +26,6 @@ export {
 	refuseResponse,
 	rememberRecord,
 	requiredText,
-	supersedeRecord,
 	type FindOptions,
 	type MemvidkbBody,
 	type MemvidkbEndpoint,
@@ -37,6 +34,7 @@ export {
 	type MemvidkbRefusal,
 	type MemvidkbRequest,
 } from "./client";
+export { eraseDocument, inspectRecord, supersedeRecord } from "./client-records";
 export {
 	ERASE_REPORT,
 	FIND_MODES,

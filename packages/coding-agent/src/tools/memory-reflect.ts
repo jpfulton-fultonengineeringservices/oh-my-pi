@@ -61,7 +61,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 				const result = await memvidkbBackend.search(
 					{
 						agentDir: this.session.settings.getAgentDir(),
-						cwd: this.session.sessionManager.getCwd(),
+						cwd: this.session.cwd,
 					},
 					query,
 					{ signal, limit: REFLECT_SOURCE_LIMIT },

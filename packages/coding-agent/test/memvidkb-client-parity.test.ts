@@ -26,7 +26,9 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as clientModule from "../src/memvidkb/client";
+import * as clientRecordsModule from "../src/memvidkb/client-records";
 import { findTrack, health, listRecords, rememberRecord, type MemvidkbEndpoint } from "../src/memvidkb/client";
+import { eraseDocument, inspectRecord, supersedeRecord } from "../src/memvidkb/client-records";
 import { KNOWLEDGE_ERROR_PREFIX } from "../src/memvidkb/errors";
 
 const TOKEN = "kb-parity-bearer-9c14";
@@ -39,8 +41,11 @@ let requests: Recorded[] = [];
 let respond: ((request: Recorded) => Response) | undefined;
 
 /**
- * Routes the service registers (`src/api.rs:139-177`) and the verbs the merged config-repo
- * client calls. `{track}` is substituted at call time.
+ * Routes the service registers and the verbs this client calls. `{track}` is substituted at
+ * call time. The route list is `agents/memvid-kb-rs/src/lib.rs:140-167` (`/healthz` :140,
+ * `POST {id}/find` :148, `POST {id}/erase` :155, `GET|POST {id}/records` :156-159,
+ * `GET {id}/records/{record_id}` :160-163, `POST {id}/records/{record_id}/supersede` :164-167)
+ * — `src/api.rs` only re-exports the handlers, so grepping `.route(` there finds nothing.
  */
 const ROUTES = [
 	{ verb: "find", method: "POST", path: "/memories/dev/find", call: () => findTrack(endpoint(), "dev", "q") },
@@ -55,6 +60,25 @@ const ROUTES = [
 		method: "POST",
 		path: "/memories/dev/records",
 		call: () => rememberRecord(endpoint(), { track: "dev", content: "c", originActor: "operator" }),
+	},
+	{
+		verb: "inspect",
+		method: "GET",
+		path: "/memories/dev/records/rec-42",
+		call: () => inspectRecord(endpoint(), { track: "dev", recordId: "rec-42" }),
+	},
+	{
+		verb: "supersede",
+		method: "POST",
+		path: "/memories/dev/records/rec-42/supersede",
+		call: () =>
+			supersedeRecord(endpoint(), { track: "dev", recordId: "rec-42", content: "c", originActor: "operator" }),
+	},
+	{
+		verb: "erase",
+		method: "POST",
+		path: "/memories/dev/erase",
+		call: () => eraseDocument(endpoint(), { track: "dev", sourceUri: "mv2://dev/rec-42" }),
 	},
 	{ verb: "health", method: "GET", path: "/healthz", call: () => health(endpoint()) },
 ] as const;
@@ -86,6 +110,43 @@ const RECORD_FIELDS = [
 
 /** Canonical spellings `src/search.rs:129-136` uses for a hit. */
 const FRAME_FIELDS = ["frameId", "documentId", "uri", "score", "textSnippet", "title", "timestamp"] as const;
+
+/**
+ * What the client PUTS ON THE WIRE for a supersede, as distinct from what comes back:
+ * `SupersedeRequest` (`src/api/records/dto.rs:58`) is `content?, originActor?, id?, capturedAt?,
+ * provider?`, and the record being superseded travels in the PATH (`{record_id}`,
+ * `src/lib.rs:165`), never the body — so a body carrying `recordId` would be ignored rather
+ * than rejected, which is exactly the drift this row exists to catch.
+ */
+const SUPERSEDE_REQUEST_FIELDS = ["content", "originActor"] as const;
+
+/** Canonical spellings `SupersedeResponse` serializes (`src/api/records/dto.rs:191`, built at `src/api/records/write.rs:289-292`). */
+const SUPERSEDE_RESPONSE_FIELDS = ["priorId", "newId", "priorUri", "newUri"] as const;
+
+/** `EraseRequest` (`src/api/documents.rs:32-34`): one required field, and the only one. */
+const ERASE_REQUEST_FIELDS = ["sourceUri"] as const;
+
+/** Canonical spellings `EraseReport` serializes (`src/api/documents.rs:47-50`) — the response, not the request. */
+const ERASE_RESPONSE_FIELDS = ["framesRemoved", "chunksRemoved", "residualFrames"] as const;
+
+/**
+ * Canonical spellings `RecordResponse` serializes (`src/api/records/dto.rs:103-126`). It is NOT
+ * the listed-record shape: the detail carries full `text` and no `textSnippet`, so reusing
+ * `RECORD_FIELDS` here would demand a field the route never sends.
+ */
+const RECORD_DETAIL_FIELDS = [
+	"id",
+	"track",
+	"uri",
+	"title",
+	"tags",
+	"text",
+	"originActor",
+	"capturedAt",
+	"lastVerifiedAt",
+	"derivedFrom",
+	"supersededBy",
+] as const;
 
 /** A `RememberResponse` as `src/api/records/dto.rs:79-98` serializes it. */
 function rememberBody(): unknown {
@@ -123,6 +184,33 @@ function recordsBody(): unknown {
 			},
 		],
 	};
+}
+
+/** A `RecordResponse` as `src/api/records/dto.rs:100-126` serializes it: the only body with `text`. */
+function recordDetailBody(): unknown {
+	return {
+		id: "rec-42",
+		track: "dev",
+		uri: "mv2://dev/rec-42",
+		title: "preference",
+		tags: ["runbook"],
+		text: "Roll the gateway before the router.",
+		originActor: "operator",
+		capturedAt: "2026-11-16T04:00:00Z",
+		lastVerifiedAt: "2026-11-16T05:00:00Z",
+		derivedFrom: null,
+		supersededBy: null,
+	};
+}
+
+/** A `SupersedeResponse` as `src/api/records/dto.rs:191` serializes it. */
+function supersedeResponseBody(): unknown {
+	return { priorId: "rec-42", newId: "rec-43", priorUri: "mv2://dev/rec-42", newUri: "mv2://dev/rec-43" };
+}
+
+/** An `EraseReport` as `src/api/documents.rs:47-50` serializes it — three fields, no card count. */
+function eraseResponseBody(): unknown {
+	return { framesRemoved: 2, chunksRemoved: 2, residualFrames: [] };
 }
 
 function findBody(): unknown {
@@ -169,6 +257,9 @@ beforeEach(async () => {
 			if (recorded.path === "/healthz")
 				return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
 			if (recorded.method === "POST" && recorded.path.endsWith("/find")) return Response.json(findBody());
+			if (recorded.path.endsWith("/supersede")) return Response.json(supersedeResponseBody());
+			if (recorded.path.endsWith("/erase")) return Response.json(eraseResponseBody());
+			if (recorded.method === "GET" && !recorded.path.endsWith("/records")) return Response.json(recordDetailBody());
 			if (recorded.method === "POST") return Response.json(rememberBody());
 			return Response.json(recordsBody());
 		},
@@ -194,15 +285,30 @@ describe("memvidkb client wire-contract parity", () => {
 	});
 
 	it("speaks no verb the service does not register", () => {
-		// The service documents no delete, erase, vacuum, compaction, or discover route
-		// (`src/api.rs:139-177`), so a client that grew one would be inventing an endpoint.
-		// The pattern names the shapes a new verb would take, so growing one — `deleteRecord`,
-		// `eraseTrack` — lands here rather than on the wire.
-		const functions = Object.entries(clientModule).filter(([, value]) => typeof value === "function");
+		// The service registers no track deletion, vacuum, compaction, or discovery route
+		// (`agents/memvid-kb-rs/src/lib.rs:140-176` registers exactly the routes listed in
+		// `ROUTES` above), so a client that grew one would be inventing an endpoint. The
+		// pattern names the shapes a new verb would take, so growing one — `deleteTrack`,
+		// `vacuumTrack`, `discoverTrack` — lands here rather than on the wire.
+		//
+		// Both client modules are censused: the record-addressed verbs live in
+		// `client-records.ts` to keep `client.ts` off the style target, and a split must not
+		// become a way to dodge this guard.
+		const functions = [...Object.entries(clientModule), ...Object.entries(clientRecordsModule)].filter(
+			([, value]) => typeof value === "function",
+		);
 		const wireVerbs = functions
 			.map(([name]) => name)
 			.filter(name => /(Track|Record|health|discover|erase|delete|vacuum|compact)/.test(name));
-		expect(wireVerbs.sort()).toEqual(["findTrack", "health", "listRecords", "rememberRecord"]);
+		expect(wireVerbs.sort()).toEqual([
+			"eraseDocument",
+			"findTrack",
+			"health",
+			"inspectRecord",
+			"listRecords",
+			"rememberRecord",
+			"supersedeRecord",
+		]);
 	});
 
 	it("reads the canonical field spellings the service serializes", async () => {
@@ -225,6 +331,36 @@ describe("memvidkb client wire-contract parity", () => {
 		}
 		// The one spelling both sides had to align on by hand.
 		expect(record?.lastVerifiedAt).toBe("2026-11-16T05:00:00Z");
+	});
+
+	it("reads the canonical field spellings of a record read, a supersede, and an erase", async () => {
+		const detail = await inspectRecord(endpoint(), { track: "dev", recordId: "rec-42" });
+		expect(detail.ok).toBe(true);
+		if (!detail.ok) return;
+		for (const field of RECORD_DETAIL_FIELDS) {
+			expect(field in detail.data, `record detail exposes canonical ${field}`).toBe(true);
+		}
+
+		const swapped = await supersedeRecord(endpoint(), {
+			track: "dev",
+			recordId: "rec-42",
+			content: "Roll the router first.",
+			originActor: "operator",
+		});
+		expect(swapped.ok).toBe(true);
+		if (!swapped.ok) return;
+		for (const field of SUPERSEDE_RESPONSE_FIELDS) {
+			expect(field in swapped.data, `supersede exposes canonical ${field}`).toBe(true);
+		}
+
+		const erased = await eraseDocument(endpoint(), { track: "dev", sourceUri: "mv2://dev/rec-42" });
+		expect(erased.ok).toBe(true);
+		if (!erased.ok) return;
+		for (const field of ERASE_RESPONSE_FIELDS) {
+			expect(field in erased.data, `erase report exposes canonical ${field}`).toBe(true);
+		}
+		// A report the service never sends a card count in must not grow one here.
+		expect(Object.keys(erased.data).sort()).toEqual([...ERASE_RESPONSE_FIELDS].sort());
 	});
 
 	it("refuses to read a snake_case body as canonical fields", async () => {
@@ -273,6 +409,28 @@ describe("memvidkb client wire-contract parity", () => {
 		expect(sent?.path).toBe("/memories/dev/records");
 		const body = JSON.parse(sent?.body ?? "{}") as Record<string, unknown>;
 		expect(Object.keys(body).sort()).toEqual(["content", "originActor", "tags", "title"]);
+	});
+
+	it("sends only the documented required fields when superseding or erasing", async () => {
+		await supersedeRecord(endpoint(), {
+			track: "dev",
+			recordId: "rec-42",
+			content: "Roll the router first.",
+			originActor: "operator",
+		});
+		const supersedeSent = requests.find(request => request.path.endsWith("/supersede"));
+		expect(supersedeSent?.method).toBe("POST");
+		const supersedeBodySent = JSON.parse(supersedeSent?.body ?? "{}") as Record<string, unknown>;
+		// `id`, `capturedAt`, and `provider` are optional on the route; sending them empty
+		// would be read as caller-chosen values, so they stay off the wire entirely.
+		expect(Object.keys(supersedeBodySent).sort()).toEqual([...SUPERSEDE_REQUEST_FIELDS].sort());
+
+		await eraseDocument(endpoint(), { track: "dev", sourceUri: "mv2://dev/rec-42" });
+		const eraseSent = requests.find(request => request.path.endsWith("/erase"));
+		expect(eraseSent?.method).toBe("POST");
+		expect(Object.keys(JSON.parse(eraseSent?.body ?? "{}") as Record<string, unknown>)).toEqual([
+			...ERASE_REQUEST_FIELDS,
+		]);
 	});
 
 	it("maps every documented status onto the shared failure taxonomy", async () => {

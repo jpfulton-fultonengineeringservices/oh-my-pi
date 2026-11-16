@@ -54,7 +54,7 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 			const result = await memvidkbBackend.edit(
 				{
 					agentDir: this.session.settings.getAgentDir(),
-					cwd: this.session.sessionManager.getCwd(),
+					cwd: this.session.cwd,
 				},
 				{
 					op: params.op,

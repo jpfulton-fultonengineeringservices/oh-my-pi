@@ -56,7 +56,8 @@ export class LearnTool implements AgentTool<LearnSchema> {
 	readonly approval = (args: unknown) => {
 		const params = args as Partial<LearnParams>;
 		const backend = cfgMemoryBackend.get(this.session.settings);
-		return params.skill || params.scope === "global" || backend === "local" || backend === "memvidkb";
+		const needsWrite = params.skill || params.scope === "global" || backend === "local" || backend === "memvidkb";
+		return needsWrite ? "write" : "read";
 	};
 	readonly label = "Learn";
 	get description(): string {

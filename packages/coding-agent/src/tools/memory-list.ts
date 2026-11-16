@@ -79,7 +79,7 @@ export class MemoryListTool implements AgentTool<typeof memoryListSchema> {
 			const result = await memvidkbBackend.list(
 				{
 					agentDir: this.session.settings.getAgentDir(),
-					cwd: this.session.sessionManager.getCwd(),
+					cwd: this.session.cwd,
 				},
 				{
 					limit: params.limit ?? DEFAULT_LIST_LIMIT,

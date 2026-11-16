@@ -13,8 +13,8 @@
 ## Registration / Visibility
 
 - `loadMode = "essential"` and `strict = true`, so the tool remains top-level rather than mounting under `xd://`.
-- Approval is dynamic: a call containing `skill` or `scope: "global"`, or any call while `memory.backend = "local"`, has `approval = "write"`; any other memory-only Hindsight/Mnemopi call has `approval = "read"`.
-- Registration requires `autolearn.enabled = true` (default `false`) and `memory.backend` equal to `"hindsight"`, `"mnemopi"`, or `"local"`. Hindsight additionally requires a configured backend (`isHindsightConfigured(loadHindsightConfig(settings))`).
+- Approval is dynamic: a call containing `skill` or `scope: "global"`, or any call while `memory.backend = "local"` or `"memvidkb"`, has `approval = "write"`; any other memory-only Hindsight/Mnemopi call has `approval = "read"`. A `memvidkb` lesson lands in a shared central track, so it carries the same tier as a file write.
+- Registration requires `autolearn.enabled = true` (default `false`) and `memory.backend` equal to `"hindsight"`, `"mnemopi"`, `"local"`, or `"memvidkb"`. Hindsight additionally requires a configured backend (`isHindsightConfigured(loadHindsightConfig(settings))`).
 - Enabled top-level sessions auto-include `learn` in an ordinary explicit tool list. Subagents do not discover or auto-receive it, but may use it when their requested-tools/frontmatter list explicitly includes it.
 - Execution is single-shot and emits no progress updates.
 

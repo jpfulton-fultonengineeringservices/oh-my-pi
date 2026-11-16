@@ -27,6 +27,7 @@ import { BUILTIN_TOOL_HELP, BUILTIN_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent
 import { MEMORY_BACKEND_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/memory-backend/tool-names";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import type { MemoryBackendOperationContext } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
+import type { MemoryBackendEditResult } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import { memvidkbBackend } from "@oh-my-pi/pi-coding-agent/memvidkb/backend";
 import { KNOWLEDGE_ERROR_PREFIX } from "@oh-my-pi/pi-coding-agent/memvidkb/errors";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -73,7 +74,7 @@ function findBody(hitCount: number): unknown {
 	};
 }
 
-function recordBody(): unknown {
+function recordBody(): Record<string, unknown> {
 	return {
 		id: RECORD_ID,
 		uri: RECORD_URI,
@@ -141,7 +142,13 @@ function makeSession(settings: Settings): ToolSession {
 }
 
 function memvidkbSettings(): Settings {
-	return Settings.isolated({ "memory.backend": "memvidkb", "memories.enabled": false });
+	// `autolearn.enabled` defaults off and `learn` gates on it: without this the learn cases
+	// below would get a null tool and read as a routing failure rather than a settings gap.
+	return Settings.isolated({
+		"memory.backend": "memvidkb",
+		"memories.enabled": false,
+		"autolearn.enabled": true,
+	});
 }
 
 /** Every file under `root` whose name matches, so a stray local write cannot hide. */
@@ -154,6 +161,11 @@ function findNamed(root: string, name: string): string[] {
 function text(result: { content: unknown }): string {
 	const first = (result.content as { type: string; text: string }[])[0];
 	return first?.text ?? "";
+}
+
+/** The tool renders the backend's verdict as text and hands the verdict itself to `details`. */
+function editDetails(result: { details?: unknown }): MemoryBackendEditResult {
+	return result.details as MemoryBackendEditResult;
 }
 
 beforeEach(async () => {
@@ -181,20 +193,28 @@ beforeEach(async () => {
 			if (recorded.path === "/healthz") return new Response("ok", { headers: { "content-type": "text/plain" } });
 			if (recorded.path.endsWith("/find")) return Response.json(findBody(1));
 			if (recorded.path.endsWith("/supersede")) {
-				return Response.json({ priorId: RECORD_ID, newId: "rec-43", track: "dev" });
+				return Response.json({
+					priorId: RECORD_ID,
+					newId: "rec-43",
+					priorUri: RECORD_URI,
+					newUri: "mv2://dev/rec-43",
+				});
 			}
 			if (recorded.path.endsWith("/erase")) {
 				return Response.json({
-					sourceUri: RECORD_URI,
-					track: "dev",
-					documentsRemoved: 1,
 					framesRemoved: 2,
 					chunksRemoved: 2,
 					residualFrames: [],
 				});
 			}
 			if (recorded.path === `/memories/dev/records/${RECORD_ID}`) {
-				return Response.json({ ...recordBody(), lastVerifiedAt: "2026-11-16T05:00:00Z" });
+				// A `RecordResponse`, not a `RememberResponse`: the detail body is the only one
+				// carrying full `text`, and the client refuses a detail without it.
+				return Response.json({
+					...recordBody(),
+					text: "Roll the gateway before the router.",
+					lastVerifiedAt: "2026-11-16T05:00:00Z",
+				});
 			}
 			if (recorded.path.endsWith("/records") && recorded.method === "POST") return Response.json(recordBody());
 			if (recorded.path === "/memories/dev/records") return Response.json(pageBody(1));
@@ -232,7 +252,7 @@ describe("memory_list verb", () => {
 		expect(requests[0]?.body).toBe("");
 
 		const rendered = text(result);
-		expect(rendered).toContain("1 record in dev");
+		expect(rendered).toContain("1 record of 1 in dev");
 		expect(rendered).toContain(`id=${RECORD_ID}-0`);
 		expect(rendered).toContain("captured=2026-11-16T04:00:00Z");
 		expect(rendered).toContain("verified=2026-11-16T05:00:00Z");
@@ -336,21 +356,21 @@ describe("memory_edit verbs", () => {
 	});
 
 	it("refuses to erase when the id cannot be resolved, instead of guessing a source", async () => {
-		respond = (request) =>
+		respond = request =>
 			request.path === `/memories/dev/records/${RECORD_ID}`
 				? new Response("no such record", { status: 404 })
 				: new Response("ok");
 		const tool = MemoryEditTool.createIf(makeSession(memvidkbSettings()))!;
 		const result = await tool.execute("edit-forget-missing", { op: "forget", id: RECORD_ID });
-		expect(result.status).toBe("failed");
-		expect(result.message.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)).toBe(true);
+		expect(editDetails(result).status).toBe("failed");
+		expect(editDetails(result).message.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)).toBe(true);
 		expect(requests.filter(request => request.path.endsWith("/erase"))).toHaveLength(0);
 	});
 
 	it("reports invalidate as unsupported and touches nothing", async () => {
 		const tool = MemoryEditTool.createIf(makeSession(memvidkbSettings()))!;
 		const result = await tool.execute("edit-invalidate", { op: "invalidate", id: RECORD_ID });
-		expect(result.status).toBe("unsupported");
+		expect(editDetails(result).status).toBe("unsupported");
 		expect(text(result)).toContain("unchanged");
 		expect(requests).toHaveLength(0);
 	});
@@ -364,8 +384,8 @@ describe("memory_edit verbs", () => {
 			{ op: "invalidate" as const, id: RECORD_ID },
 		]) {
 			const result = await tool.execute(`edit-off-${params.op}`, params);
-			expect(result.status, params.op).toBe("unsupported");
-			expect(result.message.startsWith(KNOWLEDGE_ERROR_PREFIX.forbidden), params.op).toBe(true);
+			expect(editDetails(result).status, params.op).toBe("unsupported");
+			expect(editDetails(result).message.startsWith(KNOWLEDGE_ERROR_PREFIX.forbidden), params.op).toBe(true);
 		}
 		expect(requests).toHaveLength(0);
 	});
@@ -398,7 +418,9 @@ describe("memory tools route to the knowledge service", () => {
 		expect(requests[0]?.path).toBe("/memories/dev/records");
 		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
 		expect(body["content"]).toBe("The gateway must be restarted before the router.");
-		expect(body["context"]).toBe("deploy");
+		// `context` has no wire counterpart; the backend carries it as the record's display `title`.
+		expect(body["title"]).toBe("deploy");
+		expect(body["context"]).toBeUndefined();
 		expect(text(result)).toBe("1 memory stored.");
 		// The tell-tale of a silent fallback: the local backend appends lessons to
 		// learned.md under the agent dir. A routed retain never creates it.
@@ -416,9 +438,7 @@ describe("memory tools route to the knowledge service", () => {
 
 	it("retain stops the batch at the first refusal and names what it kept", async () => {
 		respond = (request, index) =>
-			index === 0
-				? Response.json(recordBody())
-				: new Response("gateway refused", { status: 503 });
+			index === 0 ? Response.json(recordBody()) : new Response("gateway refused", { status: 503 });
 		const tool = MemoryRetainTool.createIf(makeSession(memvidkbSettings()))!;
 		const error = await tool
 			.execute("retain-partial", { items: [{ content: "kept" }, { content: "lost" }, { content: "untried" }] })
@@ -511,9 +531,9 @@ describe("memory tools route to the knowledge service", () => {
 
 	it("learn refuses a global lesson and stores nothing anywhere", async () => {
 		const learn = LearnTool.createIf(makeSession(memvidkbSettings()))!;
-		await expect(
-			learn.execute("learn-global", { memory: "cross-project lesson", scope: "global" }),
-		).rejects.toThrow(/Global memory scope is not available/);
+		await expect(learn.execute("learn-global", { memory: "cross-project lesson", scope: "global" })).rejects.toThrow(
+			/Global memory scope is not available/,
+		);
 		expect(requests).toHaveLength(0);
 		expect(findNamed(temp.path(), "learned.md")).toEqual([]);
 	});

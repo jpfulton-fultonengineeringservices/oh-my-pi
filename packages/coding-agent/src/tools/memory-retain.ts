@@ -73,7 +73,7 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 			}
 			const context = {
 				agentDir: this.session.settings.getAgentDir(),
-				cwd: this.session.sessionManager.getCwd(),
+				cwd: this.session.cwd,
 			};
 			// A failed item stores nothing and stops the batch, so the caller retries only
 			// what failed instead of trusting a success count that never happened.
