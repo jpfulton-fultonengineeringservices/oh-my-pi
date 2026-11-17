@@ -225,14 +225,15 @@ describe("createAgentSession cwd after /move", () => {
 				preloadedCustomToolPaths: [],
 			}));
 			if (!session) throw new Error("Expected a session");
-			// Nothing constructs the backend at startup: the only production caller that does
-			// for a non-Hindsight backend is the cwd rebind, so a clean slate here is what
-			// makes the post-move call evidence rather than an accident of construction.
+			// Nothing constructs the backend at startup — a settings change can construct one
+			// too, so the clean slate here is what makes the post-move call evidence rather
+			// than an accident of construction.
 			expect(startSpy.mock.calls).toHaveLength(0);
 			// `applyMemoryBackend({ retainMnemopi: false })` is the teardown-retention
-			// contract: that exact argument appears at one production site — the cwd rebind —
-			// and is what stops the outgoing scope's transcript being captured while the
-			// move's own backend rebuild drains it (`session-memory.ts:330`).
+			// contract: the cwd rebind is the only caller that applies a backend with
+			// retention suppressed, and that suppression is what stops the outgoing scope's
+			// transcript being captured while the move's own backend rebuild drains it
+			// (`session-memory.ts:330`).
 			applySpy = vi.spyOn(session, "applyMemoryBackend");
 
 			const output: string[] = [];
@@ -253,9 +254,9 @@ describe("createAgentSession cwd after /move", () => {
 			// destination session, draining the source's writes without capturing the
 			// transcript under either transient scope — and not merely report success.
 			expect(startSpy.mock.calls.map(call => call[0].session.sessionManager.getCwd())).toContain(cwdB);
-			expect(applySpy.mock.calls.map((call: [{ retainMnemopi?: boolean }]) => call[0])).toContainEqual({
-				retainMnemopi: false,
-			});
+			expect(
+				applySpy.mock.calls.some((call: [{ retainMnemopi?: boolean }]) => call[0]?.retainMnemopi === false),
+			).toBe(true);
 			// The state now live is the destination's own knowledge binding.
 			const prompt = session.systemPrompt.join("\n");
 			expect(prompt).toContain("`beta`");
@@ -263,6 +264,7 @@ describe("createAgentSession cwd after /move", () => {
 		} finally {
 			applySpy?.mockRestore();
 			startSpy.mockRestore();
+			delete process.env[tokenEnv];
 			setProjectDir(originalProjectDir);
 			if (session) {
 				try {
