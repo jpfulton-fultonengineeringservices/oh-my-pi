@@ -9,18 +9,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import type { BeforeAgentStartEvent, Extension } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
-import { loadHindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
-import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import * as memoryBackend from "@oh-my-pi/pi-coding-agent/memory-backend";
 import type { MemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
-import { loadMnemopiConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
-import {
-	loadMnemopi,
-	loadMnemopiCore,
-	MnemopiSessionState,
-	setMnemopiSessionState,
-} from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AgentSessionConfig } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -390,7 +380,7 @@ describe("queued user delivery policy", () => {
 			);
 			if (phase === "extension hook" || phase === "extension hook after rebuild") pausePreparation(pause);
 			const backend: MemoryBackend = {
-				id: "mnemopi",
+				id: "memvidkb",
 				async start() {},
 				async buildDeveloperInstructions() {
 					return "";

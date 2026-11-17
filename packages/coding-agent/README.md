@@ -30,6 +30,8 @@ Memory is selected by one setting, `memory.backend` (Settings → Memory tab, or
 - `memvidkb` (default) — the central memvid-kb-rs knowledge service, addressed through the workspace's `.memvidkb` (endpoint plus bearer token). Nothing is contacted until that file resolves, so an embedder never reaches a knowledge service it did not opt into.
 - `off` — no memory subsystem runs.
 
+Because `memvidkb` is the default, a session that never set `memory.backend` gets the memory tools — `recall`, `retain`, `reflect`, `memory_edit` and `memory_list` — instead of no memory at all. Nothing is contacted until the workspace's `.memvidkb` resolves: in a workspace without one, session start succeeds and each of those tools answers `knowledge_invalid_config: No .memvidkb configuration file found in workspace (code CONFIG_NOT_FOUND, workspace <dir>)`, so the operator gets an actionable error naming the workspace rather than a silent no-op or a call to a service nobody configured.
+
 Switching backends mid-session immediately replaces the live backend, memory tools, listeners, and system-prompt context.
 
 ### Retired backends
@@ -48,7 +50,7 @@ memory:
 | `mnemopi`      | memvid-kb-rs knowledge service; was the local Mnemopi SQLite store (formerly `mnemosyne`)                     |
 | `sharpshooter` | memvid-kb-rs knowledge service; was the friction-gated project-decision store                                 |
 
-The retired implementations and their settings namespaces are still in the tree, pending a separate removal; they are unreachable through the selector, the settings panel, and the memory tools.
+The retired implementations and their settings namespaces are still in the tree, pending a separate removal; they are unreachable through the selector, the settings panel, and the memory tools. The settings enum still accepts the four retired ids so that an existing config loads instead of failing to parse; they are refused at resolve time, before any backend is constructed, with an actionable notice.
 
 ### `memories.enabled`
 
