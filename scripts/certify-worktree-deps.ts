@@ -34,29 +34,55 @@ const git = (args: string[]): string => spawnSync("git", args, { cwd: repoRoot, 
  *
  * `git worktree list --porcelain` cannot be taken at face value here: for a
  * submodule whose gitdir was moved under the parent's `.git/modules`, its first
- * entry is that gitdir, not a checkout. So keep only entries that are actually
- * a root of this repo, drop the ones that live inside this tree (farm
- * worktrees sit under `.git-worktrees/`), and prefer the survivor that is not
- * such a worktree - the main checkout, whose `bun install` is canonical.
+ * entry is that gitdir, not a checkout. So keep only entries that are actually a
+ * root of this repo, then identify the *main* checkout the way git itself does -
+ * its `.git` points straight at the common gitdir, while every linked worktree's
+ * `.git` points at `<common>/worktrees/<name>`. Path heuristics are not good
+ * enough: a scratch `git worktree add --detach /tmp/…` sits outside the repo and
+ * is indistinguishable from the main checkout by path alone, and wiring a tree
+ * against that install is exactly the silent cross-tree mixing this script
+ * exists to prevent.
  */
 const checkoutRoots = git(["worktree", "list", "--porcelain"])
 	.split("\n")
 	.filter(l => l.startsWith("worktree "))
 	.map(l => l.slice("worktree ".length).trim())
 	.filter(p => fs.existsSync(path.join(p, "package.json")) && fs.existsSync(path.join(p, "packages", "coding-agent")));
-// The canonical install lives in the checkout that is neither a farm worktree
-// nor a scratch tree under `.git-worktrees/`, and that has been installed.
-// Nested copies of this tree (a sandbox clone inside a worktree) never win.
-const candidates = checkoutRoots.filter(
-	p => path.resolve(p) !== path.resolve(repoRoot) || fs.existsSync(path.join(p, "node_modules")),
-);
-const mainRoot =
-	candidates.find(p => !p.includes(".git-worktrees") && fs.existsSync(path.join(p, "node_modules"))) ??
-	candidates.find(p => !p.includes(".git-worktrees")) ??
-	// A lone checkout (no sibling worktrees registered) certifies against its own
-	// install; the absence of one is reported below as a missing install, not as
-	// a failure to find some other checkout.
-	repoRoot;
+const commonDir = path.resolve(git(["rev-parse", "--git-common-dir"]));
+const isCheckoutRoot = (p: string): boolean =>
+	fs.existsSync(path.join(p, "package.json")) && fs.existsSync(path.join(p, "packages", "coding-agent"));
+const isMainCheckout = (p: string): boolean => {
+	const dotGit = path.join(p, ".git");
+	const st = fs.lstatSync(dotGit, { throwIfNoEntry: false });
+	if (!st) return false;
+	if (st.isDirectory()) return true; // plain repo: the checkout owns its gitdir
+	const target = path.resolve(
+		p,
+		fs
+			.readFileSync(dotGit, "utf8")
+			.replace(/^gitdir:\s*/, "")
+			.trim(),
+	);
+	return target === commonDir; // linked worktrees resolve to <common>/worktrees/<name>
+};
+// A submodule whose gitdir lives under the parent's `.git/modules/<path>` is not
+// listed by `git worktree list` at its own path - git lists the gitdir instead -
+// so recover it from the gitdir location: `<superproject>/.git/modules/<subpath>`
+// means the checkout is `<superproject>/<subpath>`.
+const submoduleMain = (() => {
+	const m = commonDir.match(/^(.*)\/\.git\/modules\/(.+)$/);
+	if (!m) return null;
+	const superproject = git(["rev-parse", "--show-superproject-working-tree"]) || m[1];
+	const candidate = path.join(superproject, m[2]);
+	return isCheckoutRoot(candidate) && isMainCheckout(candidate) ? candidate : null;
+})();
+const mainCheckout =
+	[submoduleMain, ...checkoutRoots.filter(p => isMainCheckout(p))].find(
+		p => p !== undefined && p !== null && fs.existsSync(path.join(p, "node_modules")),
+	) ?? null;
+// A lone checkout (no installed main checkout registered) certifies against its
+// own install; the absence of one is reported below as a missing install.
+const mainRoot = mainCheckout ?? repoRoot;
 const isWorktree = path.resolve(mainRoot) !== path.resolve(repoRoot);
 const mainNm = path.join(mainRoot, "node_modules");
 const nm = path.join(repoRoot, "node_modules");
@@ -80,9 +106,20 @@ function mirrorEntries(holder: string, srcNm: string, treeBase: string): number 
 		const holderOh = path.join(holder, "@oh-my-pi");
 		fs.mkdirSync(holderOh, { recursive: true });
 		for (const name of fs.readdirSync(srcOh)) {
-			const rel = fs.readlinkSync(path.join(srcOh, name)); // ../../packages/<dir>
-			const target = path.join(treeBase, rel.replace(/^(\.\.\/)+/, ""));
-			if (!fs.existsSync(target)) {
+			// The main checkout's link may be relative (`../../packages/tui`) or
+			// absolute, and it points at the *main* tree's sources - the one thing
+			// this tree must never borrow. Take only the package directory name from
+			// it and re-root that name inside the tree being wired.
+			const srcLink = path.join(srcOh, name);
+			let pkgDir = "";
+			try {
+				pkgDir = path.basename(fs.realpathSync(srcLink));
+			} catch (error) {
+				problems.push(`@oh-my-pi/${name}: unreadable link in ${srcNm}: ${(error as Error).message}`);
+				continue;
+			}
+			const target = path.join(treeBase, "packages", pkgDir);
+			if (!fs.existsSync(path.join(target, "package.json"))) {
 				problems.push(`@oh-my-pi/${name}: no package dir at ${target}`);
 				continue;
 			}
@@ -167,7 +204,7 @@ const nmKind = !st ? "MISSING" : st.isSymbolicLink() ? "SYMLINK" : st.isDirector
 console.log(
 	`PROV head=${git(["rev-parse", "HEAD"])} write_tree=${git(["write-tree"])} head_tree=${git(["rev-parse", "HEAD^{tree}"])} ` +
 		`porcelain=${JSON.stringify(git(["status", "--porcelain"]))} node_modules=${nmKind} ` +
-		`entries=${st?.isDirectory() ? fs.readdirSync(nm).length : 0} worktree=${isWorktree}`,
+		`entries=${st?.isDirectory() ? fs.readdirSync(nm).length : 0} worktree=${isWorktree} main_checkout=${mainRoot}`,
 );
 if (problems.length) {
 	console.error("certify-worktree-deps: FAIL\n  " + problems.join("\n  "));
