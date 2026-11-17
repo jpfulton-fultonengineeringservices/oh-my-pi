@@ -6,6 +6,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import * as hindsightBackend from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { memvidkbBackend } from "@oh-my-pi/pi-coding-agent/memvidkb/backend";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
@@ -204,6 +205,7 @@ describe("createAgentSession cwd after /move", () => {
 		const startSpy = vi.spyOn(memvidkbBackend, "start");
 		let session: AgentSession | undefined;
 		let applySpy: ReturnType<typeof vi.spyOn> | undefined;
+		let rebindSpy: { mockRestore: () => void } | undefined;
 		try {
 			({ session } = await createAgentSession({
 				cwd: cwdA,
@@ -235,6 +237,20 @@ describe("createAgentSession cwd after /move", () => {
 			// transcript being captured while the move's own backend rebuild drains it
 			// (`session-memory.ts:330`).
 			applySpy = vi.spyOn(session, "applyMemoryBackend");
+			// The rebind is a module-level function the /move path imports, not a session
+			// method, so the arm counts real invocations by wrapping the module export the
+			// way the caller sees it. Without this, a spy over the rebind — or a /move path
+			// that stopped calling it — would leave every assertion below satisfied while
+			// the code under test never ran.
+			const hindsightModule = hindsightBackend as {
+				rebindMemoryBackendForCwd: (moved: AgentSession) => Promise<void>;
+			};
+			const originalRebind = hindsightModule.rebindMemoryBackendForCwd;
+			let rebindInvocations = 0;
+			rebindSpy = vi.spyOn(hindsightModule, "rebindMemoryBackendForCwd").mockImplementation(async moved => {
+				rebindInvocations += 1;
+				await originalRebind(moved);
+			});
 
 			const output: string[] = [];
 			await executeAcpBuiltinSlashCommand("/move " + cwdB, {
@@ -250,6 +266,11 @@ describe("createAgentSession cwd after /move", () => {
 			});
 			expect(output.join("\n")).toContain("Moved to ");
 			expect(sessionManager.getCwd()).toBe(cwdB);
+			// Vacuity guard, checked before any other leg: an arm whose rebind never ran
+			// must fail loudly rather than pass on effects some other path produced.
+			if (rebindInvocations === 0) {
+				throw new Error("rebindMemoryBackendForCwd was not invoked by the time the session moved");
+			}
 			// The move itself must build the destination's backend state — through the
 			// destination session, draining the source's writes without capturing the
 			// transcript under either transient scope — and not merely report success.
@@ -262,6 +283,7 @@ describe("createAgentSession cwd after /move", () => {
 			expect(prompt).toContain("`beta`");
 			expect(prompt).not.toContain("`alpha`");
 		} finally {
+			rebindSpy?.mockRestore();
 			applySpy?.mockRestore();
 			startSpy.mockRestore();
 			delete process.env[tokenEnv];
