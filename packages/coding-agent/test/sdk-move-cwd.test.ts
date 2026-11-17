@@ -6,6 +6,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import * as hindsightBackend from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { memvidkbBackend } from "@oh-my-pi/pi-coding-agent/memvidkb/backend";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
@@ -204,6 +205,7 @@ describe("createAgentSession cwd after /move", () => {
 		const startSpy = vi.spyOn(memvidkbBackend, "start");
 		let session: AgentSession | undefined;
 		let applySpy: ReturnType<typeof vi.spyOn> | undefined;
+		let rebindSpy: { mockRestore: () => void } | undefined;
 		try {
 			({ session } = await createAgentSession({
 				cwd: cwdA,
@@ -235,19 +237,20 @@ describe("createAgentSession cwd after /move", () => {
 			// transcript being captured while the move's own backend rebuild drains it
 			// (`session-memory.ts:330`).
 			applySpy = vi.spyOn(session, "applyMemoryBackend");
-			// A spy swapped over `session.rebindMemoryBackendForCwd` would leave every
-			// assertion below satisfied while the production rebind never ran, so the arm
-			// wraps the real method, counts invocations, and refuses to score a session
-			// whose rebind was never invoked at all.
-			const rebindMethod = (session as unknown as { rebindMemoryBackendForCwd?: () => Promise<void> })
-				.rebindMemoryBackendForCwd;
-			if (typeof rebindMethod !== "function") throw new Error("test setup: rebindMemoryBackendForCwd missing");
+			// The rebind is a module-level function the /move path imports, not a session
+			// method, so the arm counts real invocations by wrapping the module export the
+			// way the caller sees it. Without this, a spy over the rebind — or a /move path
+			// that stopped calling it — would leave every assertion below satisfied while
+			// the code under test never ran.
+			const hindsightModule = hindsightBackend as {
+				rebindMemoryBackendForCwd: (moved: AgentSession) => Promise<void>;
+			};
+			const originalRebind = hindsightModule.rebindMemoryBackendForCwd;
 			let rebindInvocations = 0;
-			(session as unknown as { rebindMemoryBackendForCwd: () => Promise<void> }).rebindMemoryBackendForCwd =
-				async () => {
-					rebindInvocations += 1;
-					await rebindMethod.call(session);
-				};
+			rebindSpy = vi.spyOn(hindsightModule, "rebindMemoryBackendForCwd").mockImplementation(async moved => {
+				rebindInvocations += 1;
+				await originalRebind(moved);
+			});
 
 			const output: string[] = [];
 			await executeAcpBuiltinSlashCommand("/move " + cwdB, {
@@ -280,9 +283,7 @@ describe("createAgentSession cwd after /move", () => {
 			expect(prompt).toContain("`beta`");
 			expect(prompt).not.toContain("`alpha`");
 		} finally {
-			if (session) {
-				delete (session as unknown as { rebindMemoryBackendForCwd?: unknown }).rebindMemoryBackendForCwd;
-			}
+			rebindSpy?.mockRestore();
 			applySpy?.mockRestore();
 			startSpy.mockRestore();
 			delete process.env[tokenEnv];
