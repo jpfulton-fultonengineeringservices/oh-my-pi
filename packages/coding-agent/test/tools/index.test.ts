@@ -10,7 +10,10 @@ function createTestSession(overrides: Partial<ToolSession> = {}): ToolSession {
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
-		settings: Settings.isolated(),
+		// Same reason as in createSettingsWithOverrides: the arms that build their session here assert
+		// the ordinary tool list, and with the memvidkb default they were receiving recall, retain,
+		// reflect, memory_edit and memory_list on top of what they asked for.
+		settings: Settings.isolated({ "memory.backend": "off" }),
 		...overrides,
 	};
 }
