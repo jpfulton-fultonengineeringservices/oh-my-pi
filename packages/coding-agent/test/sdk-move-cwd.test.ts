@@ -235,6 +235,19 @@ describe("createAgentSession cwd after /move", () => {
 			// transcript being captured while the move's own backend rebuild drains it
 			// (`session-memory.ts:330`).
 			applySpy = vi.spyOn(session, "applyMemoryBackend");
+			// A spy swapped over `session.rebindMemoryBackendForCwd` would leave every
+			// assertion below satisfied while the production rebind never ran, so the arm
+			// wraps the real method, counts invocations, and refuses to score a session
+			// whose rebind was never invoked at all.
+			const rebindMethod = (session as unknown as { rebindMemoryBackendForCwd?: () => Promise<void> })
+				.rebindMemoryBackendForCwd;
+			if (typeof rebindMethod !== "function") throw new Error("test setup: rebindMemoryBackendForCwd missing");
+			let rebindInvocations = 0;
+			(session as unknown as { rebindMemoryBackendForCwd: () => Promise<void> }).rebindMemoryBackendForCwd =
+				async () => {
+					rebindInvocations += 1;
+					await rebindMethod.call(session);
+				};
 
 			const output: string[] = [];
 			await executeAcpBuiltinSlashCommand("/move " + cwdB, {
@@ -250,6 +263,11 @@ describe("createAgentSession cwd after /move", () => {
 			});
 			expect(output.join("\n")).toContain("Moved to ");
 			expect(sessionManager.getCwd()).toBe(cwdB);
+			// Vacuity guard, checked before any other leg: an arm whose rebind never ran
+			// must fail loudly rather than pass on effects some other path produced.
+			if (rebindInvocations === 0) {
+				throw new Error("rebindMemoryBackendForCwd was not invoked by the time the session moved");
+			}
 			// The move itself must build the destination's backend state — through the
 			// destination session, draining the source's writes without capturing the
 			// transcript under either transient scope — and not merely report success.
@@ -262,6 +280,9 @@ describe("createAgentSession cwd after /move", () => {
 			expect(prompt).toContain("`beta`");
 			expect(prompt).not.toContain("`alpha`");
 		} finally {
+			if (session) {
+				delete (session as unknown as { rebindMemoryBackendForCwd?: unknown }).rebindMemoryBackendForCwd;
+			}
 			applySpy?.mockRestore();
 			startSpy.mockRestore();
 			delete process.env[tokenEnv];
