@@ -19,6 +19,10 @@ function createSettingsWithOverrides(overrides: Record<string, unknown> = {}): S
 	return Settings.isolated({
 		"lsp.formatOnWrite": true,
 		"bashInterceptor.enabled": true,
+		// Every arm here asserts which ordinary tools are selected; nothing in this file is about the
+		// memory surface. Pin the backend off so the expectations cannot drift with whatever the default
+		// backend happens to mount.
+		"memory.backend": "off",
 		...overrides,
 	});
 }

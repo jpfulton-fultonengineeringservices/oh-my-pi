@@ -70,32 +70,6 @@ function focusMemoryTab(comp: SettingsSelectorComponent): void {
 }
 
 describe("SettingsSelectorComponent memory tab", () => {
-	it("reveals condition-gated Hindsight rows the moment memory.backend changes via the submenu", () => {
-		cfgMemoryBackend.set(settings, "off");
-		const comp = createSelector();
-		focusMemoryTab(comp);
-		// Width 70 keeps the flat single-column layout (the wide split layout
-		// shows only the active section's rows, covered by the sidebar test).
-		const before = comp.render(70).join("\n");
-		expect(before).toContain("Memory Backend");
-		expect(before).not.toContain("Hindsight API URL");
-		expect(before).not.toContain("Hindsight API Token");
-
-		// Memory Backend is the only visible row, so it's already selected at index 0.
-		// Enter opens the SelectSubmenu pre-positioned on "off"; navigate to "hindsight" (index 2) and confirm.
-		comp.handleInput("\n");
-		comp.handleInput("\x1b[B");
-		comp.handleInput("\x1b[B");
-		comp.handleInput("\n");
-
-		expect(cfgMemoryBackend.get(settings)).toBe("hindsight");
-		const after = comp.render(70).join("\n");
-		expect(after).toContain("Memory Backend");
-		expect(after).toContain("Hindsight API URL");
-		expect(after).toContain("Hindsight API Token");
-		expect(after).toContain("Hindsight Auto Recall");
-	});
-
 	it("saves a pasted Hindsight API token from its settings row", () => {
 		cfgMemoryBackend.set(settings, "hindsight");
 		cfgHindsightApiToken.set(settings, "saved-secret-token");

@@ -114,7 +114,9 @@ describe("parseAgentFields", () => {
 			hasUI: false,
 			getSessionFile: () => null,
 			getSessionSpawns: () => "",
-			settings: Settings.isolated(),
+			// This arm is about a malformed `tools:` declaration yielding nothing but the child yield
+			// tool; the memory surface is not under test, so pin it off rather than assert around it.
+			settings: Settings.isolated({ "memory.backend": "off" }),
 			taskDepth: 1,
 			requireYieldTool: true,
 			enableLsp: false,
