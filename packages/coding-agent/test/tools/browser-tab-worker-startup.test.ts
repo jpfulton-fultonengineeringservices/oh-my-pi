@@ -27,6 +27,8 @@ import type { CDPSession } from "puppeteer-core";
 import { chromiumAvailable, visibleBrowserAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+// bun times a hook out after 5 s by default, less than launching or killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 // Headful launches additionally need a display; `CHROMIUM_AVAILABLE` only
 // checks headless CDP on Linux, which does not require an X server.
 // Never open a desktop window during ordinary test runs; exercise this manual
@@ -43,11 +45,11 @@ beforeAll(async () => {
 	if (!("browser" in launched)) throw new Error("Expected a Puppeteer browser");
 	holdBrowser(launched);
 	sharedHeadless = launched;
-});
+}, BROWSER_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
 	if (sharedHeadless) await releaseBrowser(sharedHeadless, { kill: true });
-});
+}, BROWSER_HOOK_TIMEOUT_MS);
 
 function headless(): PuppeteerBrowserHandle {
 	if (!sharedHeadless?.browser.connected) throw new Error("Expected the shared headless browser");

@@ -9,6 +9,8 @@ import type { Page, WaitForOptions } from "puppeteer-core";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+// bun times a hook out after 5 s by default, less than killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 const server = Bun.serve({
 	port: 0,
 	// `/never-ends` must outlive the run budget instead of Bun's 10s idle cut.
@@ -109,7 +111,7 @@ afterAll(async () => {
 	await releaseAllTabs({ kill: true });
 	await disposeAllVmContexts();
 	server.stop(true);
-});
+}, BROWSER_HOOK_TIMEOUT_MS);
 
 function fakePage(frame: { _lifecycleEvents: Set<string>; detached?: boolean }, closed = () => false): Page {
 	return {
