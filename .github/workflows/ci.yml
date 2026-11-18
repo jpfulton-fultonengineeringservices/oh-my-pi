@@ -32,7 +32,10 @@ on:
          - "patches/**"
          - ".github/**"
    pull_request:
-      branches: [main, omp2]
+      # fulton/rebase-v18.20.0 is the fork base the feature branches open PRs
+      # against; this filter matches the PR's BASE branch, so omitting it left
+      # those PRs with no CI run at all.
+      branches: [main, omp2, fulton/rebase-v18.20.0]
       paths:
          - "packages/**"
          - "crates/**"
