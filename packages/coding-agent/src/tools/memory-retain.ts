@@ -37,6 +37,36 @@ const memoryRetainSchemaWithScope = type({
 type MemoryRetainSchema = typeof memoryRetainSchemaBase | typeof memoryRetainSchemaWithScope;
 
 export type MemoryRetainParams = typeof memoryRetainSchemaWithScope.infer;
+
+/**
+ * The success result for a backend that answers a write with the id it assigned.
+ *
+ * The ids go in the model-visible text, one line per item, because the id is the
+ * handle `memory_edit` and `recall` address a record by: a result that says only
+ * "2 memories stored." leaves the agent to re-list the store and guess which row
+ * it just wrote. Item numbers are the caller's own input order, matching the
+ * wording the partial-failure path uses for the ids it did keep. A lone item puts
+ * its id on the count line itself: there is no other item to tell it apart from,
+ * and one line is what the model reads first.
+ */
+function storedResult(storedIds: string[], count: number): AgentToolResult<MemoryRetainDetails> {
+	const noun = count === 1 ? "memory" : "memories";
+	const head = `${String(count)} ${noun} stored.`;
+	// An empty id is not a handle: it is dropped rather than reported as `(id )`,
+	// while the surviving ones keep the item number of the slot they came from.
+	const ids = storedIds.filter(id => id.length > 0);
+	const text =
+		count === 1 && ids.length === 1
+			? `${head} id=${ids[0]}`
+			: [head, ...storedIds.map((id, index) => (id.length > 0 ? `item ${String(index + 1)} (id ${id})` : ""))]
+					.filter(line => line.length > 0)
+					.join("\n");
+	return {
+		content: [{ type: "text", text }],
+		details: ids.length > 0 ? { count, ids } : { count },
+	};
+}
+
 export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRetainDetails> {
 	readonly name = "retain";
 	/** A global item reaches every project's recall, so it needs the same approval as a file write. */
@@ -97,12 +127,7 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 				}
 				storedIds.push(...(result.ids ?? []));
 			}
-			const count = params.items.length;
-			const noun = count === 1 ? "memory" : "memories";
-			return {
-				content: [{ type: "text", text: `${String(count)} ${noun} stored.` }],
-				details: { count },
-			};
+			return storedResult(storedIds, params.items.length);
 		}
 
 		if (backend === "mnemopi") {
@@ -157,12 +182,7 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 					storedIds.push(id);
 				}
 
-				const count = params.items.length;
-				const noun = count === 1 ? "memory" : "memories";
-				return {
-					content: [{ type: "text", text: `${count} ${noun} stored.` }],
-					details: { count },
-				};
+				return storedResult(storedIds, params.items.length);
 			});
 		}
 
