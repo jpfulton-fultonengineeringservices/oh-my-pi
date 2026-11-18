@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { YAML } from "bun";
+import { cfgAutolearnEnabled } from "@oh-my-pi/pi-coding-agent/autolearn/settings";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { SubmenuOption } from "@oh-my-pi/pi-tui/overlays/settings-defs";
 import { createMemoryRuntimeContext, offBackend, resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend";
@@ -235,20 +236,57 @@ describe("a config stored on a retired memory backend", () => {
 		expect(retiredNotices(warn, "is retired")).toHaveLength(0);
 	});
 
-	it("leaves the file alone until a save is due, then persists `off` and stops noticing", async () => {
+	it("rewrites nothing on load, and nothing on a flush with no pending change", async () => {
+		await Bun.write(configPath, YAML.stringify({ memory: { backend: "sharpshooter" } }, null, 2));
+		const before = await Bun.file(configPath).text();
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const settings = await load();
+		expect(await Bun.file(configPath).text()).toBe(before);
+
+		// `flush()` is not a rewrite: with nothing staged it chains a save that returns at once, so
+		// a session that only ever reads its config cannot be the thing that lands the migration.
+		// Landing `off` silently behind the operator's back would leave a config that no longer says
+		// what it once did — which is also why the notice keeps repeating instead.
+		await settings.flush();
+		expect(await Bun.file(configPath).text()).toBe(before);
+		expect(YAML.parse(before)).toEqual({ memory: { backend: "sharpshooter" } });
+		expect(retiredNotices(warn, 'memory.backend: "sharpshooter"')).toHaveLength(1);
+	});
+
+	it("lands `off` with the next save of any setting, not only a save of `memory.backend`", async () => {
+		// The save path re-reads the file under the write lock through the same migration and writes
+		// the whole document, so whatever prompted the save, the migrated value rides along with it.
+		// The prompted setting has to survive too: this is a migration, not a config reset.
 		await Bun.write(configPath, YAML.stringify({ memory: { backend: "sharpshooter" } }, null, 2));
 		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 		const settings = await load();
 
-		// Migration is read-time normalisation, not a rewrite: the file still names the retired id,
-		// which is why the notice repeats at each launch until the operator saves. Landing on `off`
-		// silently behind their back would leave a config that no longer says what it once did.
+		cfgAutolearnEnabled.set(settings, true);
+		await settings.flush();
+
+		const saved = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+		expect(saved.memory).toEqual({ backend: "off" });
+		expect(saved.autolearn).toEqual({ enabled: true });
+		// The save re-runs the migration over the still-retired file contents; the per-instance
+		// notice set must hold it to the one line the load already logged.
+		expect(retiredNotices(warn, 'memory.backend: "sharpshooter"')).toHaveLength(1);
+	});
+
+	it("persists `off` on an explicit write of the setting and stops noticing", async () => {
+		await Bun.write(configPath, YAML.stringify({ memory: { backend: "sharpshooter" } }, null, 2));
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const settings = await load();
+
+		// Reading the migration out of the selector does not clear it from the file: the operator is
+		// still choosing `off` (or `memvidkb`) explicitly here, and until they do, the value on disk
+		// keeps naming the backend they had.
 		expect(YAML.parse(await Bun.file(configPath).text())).toEqual({ memory: { backend: "sharpshooter" } });
 		expect(retiredNotices(warn, 'memory.backend: "sharpshooter"')).toHaveLength(1);
 
-		// The first save carries the migrated value with it, and the result is no longer migration
-		// input — the migration's own output must not re-notice, or the operator is told the same
-		// thing again on the launch after they acted on it.
+		// Once written, the value is no longer migration input — the migration's own output must not
+		// re-notice, or the operator is told the same thing again on the launch after they acted on
+		// it.
 		cfgMemoryBackend.set(settings, "off");
 		await settings.flush();
 		const saved = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
