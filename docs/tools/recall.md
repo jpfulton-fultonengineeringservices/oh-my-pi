@@ -103,7 +103,7 @@ When no matches exist:
 
 ## Limits & Caps
 
-- Tool availability requires `memory.backend` to be `"hindsight"`, `"mnemopi"`, or `"memvidkb"`; default `memory.backend` is `"off"`.
+- Tool availability requires `memory.backend` to be `"hindsight"`, `"mnemopi"`, or `"memvidkb"`; the selectable values are `"memvidkb"` (the default) and `"off"`, and the retired `hindsight`/`mnemopi` implementations still mount the tool when configured directly until they are removed.
 - Hindsight client default budget for raw `HindsightApi.recall(...)` is `"mid"`; this tool overrides from config.
 - Hindsight recall settings:
    - `hindsight.recallBudget = "mid"`

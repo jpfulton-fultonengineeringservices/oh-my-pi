@@ -10,7 +10,6 @@ import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { sharpshooterMemoryFilePath } from "@oh-my-pi/pi-coding-agent/sharpshooter/paths";
 import { getAgentDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -42,6 +41,57 @@ describe("advisor memory context", () => {
 			await tempDir.remove();
 		} catch {}
 	});
+
+	const kbServers: Array<{ stop(): void }> = [];
+
+	afterEach(() => {
+		while (kbServers.length > 0) kbServers.pop()?.stop();
+	});
+
+	/**
+	 * Point a workspace at the knowledge service through a real `.memvidkb`, with an
+	 * in-process stub answering the health probe (the pattern from
+	 * test/sdk-skills.test.ts) so the backend starts without a deployed service.
+	 */
+	async function writeMemvidkbWorkspaceConfig(cwd: string): Promise<void> {
+		const tokenEnv = "OMP_ADVISOR_MEMORY_KB_TOKEN";
+		process.env[tokenEnv] = "advisor-memory-test-bearer";
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(request) {
+				const url = new URL(request.url);
+				await request.text();
+				if (url.pathname === "/healthz") {
+					return new Response("ok", { headers: { "content-type": "text/plain" } });
+				}
+				return Response.json({
+					id: "rec-1",
+					uri: "mv2://dev/rec-1",
+					frameId: "frame-1",
+					track: "dev",
+					title: null,
+					tags: [],
+					originActor: "fulton",
+					capturedAt: "2026-11-16T04:00:00Z",
+					derivedFrom: null,
+				});
+			},
+		});
+		kbServers.push(server);
+		await fs.writeFile(
+			`${cwd}/.memvidkb`,
+			JSON.stringify({
+				version: 1,
+				context: "fulton",
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				tokenEnvVar: tokenEnv,
+				providers: ["litellm"],
+				tracks: ["dev"],
+				remember: "on",
+			}),
+		);
+	}
 
 	async function createAdvisedSession(
 		backend: string,
@@ -86,33 +136,29 @@ describe("advisor memory context", () => {
 		return result.session;
 	}
 
-	it("injects the sharpshooter summary into main and advisor prompts without a recall tool", async () => {
+	it("injects the memvidkb instructions into main and advisor prompts", async () => {
 		tempDir = TempDir.createSync("@pi-advisor-memory-");
-		const decision = "Keep storage project-scoped for advisor memory test.";
-		const memoryFile = sharpshooterMemoryFilePath(tempDir.path(), tempDir.path(), "architecture.md");
-		await fs.mkdir(memoryFile.slice(0, memoryFile.lastIndexOf("/")), { recursive: true });
-		await Bun.write(memoryFile, `- ${decision}\n`);
+		await writeMemvidkbWorkspaceConfig(tempDir.path());
 
-		session = await createAdvisedSession("sharpshooter");
-		// Primary path: the decision file lands in the main agent's system prompt.
-		expect(session.agent.state.systemPrompt.join("\n")).toContain(decision);
+		session = await createAdvisedSession("memvidkb");
+		// Primary path: the rendered track list lands in the main agent's system prompt.
+		expect(session.agent.state.systemPrompt.join("\n")).toContain("`dev`");
 
 		const advisor = session.getAdvisorAgent();
 		if (!advisor) throw new Error("Expected advisor agent to exist");
-		// Advisor path: same summary, wrapped as shared background knowledge.
+		// Advisor path: the same instructions, wrapped as shared background knowledge.
 		const advisorPrompt = advisor.state.systemPrompt.join("\n");
 		expect(advisorPrompt).toContain("<memory-context>");
-		expect(advisorPrompt).toContain(decision);
-		// Sharpshooter builds no recall tool, so the default roster stays read-only.
-		expect(advisor.state.tools.map(tool => tool.name)).not.toContain("recall");
+		expect(advisorPrompt).toContain("`dev`");
 	});
 
 	it("grants the default advisor roster a recall tool when the backend builds one", async () => {
 		tempDir = TempDir.createSync("@pi-advisor-memory-");
-		// Hindsight without apiUrl is inert at runtime but still builds the recall
-		// tool (MemoryRecallTool.createIf gates on the setting alone), which is
+		// memvidkb is the only remaining backend that builds the recall tool
+		// (MemoryRecallTool.createIf admits memvidkb alongside the retired ids), which is
 		// exactly what the advisor roster filter consumes.
-		session = await createAdvisedSession("hindsight");
+		await writeMemvidkbWorkspaceConfig(tempDir.path());
+		session = await createAdvisedSession("memvidkb");
 		const advisor = session.getAdvisorAgent();
 		if (!advisor) throw new Error("Expected advisor agent to exist");
 		const names = advisor.state.tools.map(tool => tool.name);
@@ -123,7 +169,24 @@ describe("advisor memory context", () => {
 		expect(names).not.toContain("edit");
 	});
 
-	it.each(["hindsight", "mnemopi"])("keeps in-memory advisor URL tools bound to the %s session", async backend => {
+	it("grants no recall tool when the backend builds none", async () => {
+		tempDir = TempDir.createSync("@pi-advisor-memory-");
+		// `off` stores nothing and builds nothing, so the roster filter must fall back to
+		// the plain read-only investigative set.
+		session = await createAdvisedSession("off");
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+		const names = advisor.state.tools.map(tool => tool.name);
+		expect(names).not.toContain("recall");
+		expect(names).toContain("read");
+	});
+
+	// `memvidkb` keeps the `memory://` surface registered and refuses it as file-backed
+	// storage the active backend does not have; `off` never registers the protocol at all.
+	it.each([
+		{ backend: "memvidkb", refusal: "active backend: memvidkb" },
+		{ backend: "off", refusal: "Unknown protocol: memory://" },
+	] as const)("keeps in-memory advisor URL tools bound to the $backend session", async ({ backend, refusal }) => {
 		tempDir = TempDir.createSync("@pi-advisor-memory-urls-");
 		const previousAgentDir = getAgentDir();
 		setAgentDir(tempDir.path());
@@ -141,37 +204,21 @@ describe("advisor memory context", () => {
 			const glob = advisor.state.tools.find(tool => tool.name === "glob");
 			if (!read || !grep || !glob) throw new Error("Expected default advisor URL tools");
 
-			const unavailableRoot = `active backend: ${backend}`;
-			await expect(read.execute("advisor-root-read", { path: "memory://root" })).rejects.toThrow(unavailableRoot);
+			await expect(read.execute("advisor-root-read", { path: "memory://root" })).rejects.toThrow(refusal);
 			await expect(
 				grep.execute("advisor-root-grep", {
 					path: "memory://root",
 					pattern: "Advisor project summary marker",
 				}),
-			).rejects.toThrow(unavailableRoot);
-			await expect(glob.execute("advisor-root-glob", { path: "memory://root" })).rejects.toThrow(unavailableRoot);
-			await expect(glob.execute("advisor-root-glob", { path: "memory://root/*.md" })).rejects.toThrow(
-				unavailableRoot,
-			);
+			).rejects.toThrow(refusal);
+			await expect(glob.execute("advisor-root-glob", { path: "memory://root" })).rejects.toThrow(refusal);
+			await expect(glob.execute("advisor-root-glob", { path: "memory://root/*.md" })).rejects.toThrow(refusal);
 
-			if (backend === "mnemopi") {
-				for (let attempt = 0; !session.getMnemopiSessionState() && attempt < 100; attempt++) {
-					await Bun.sleep(10);
-				}
-				const id = session.getMnemopiSessionState()?.rememberInScope("Advisor scoped memory marker.");
-				if (!id) throw new Error("Expected a stored memory id");
-				const row = await read.execute("advisor-memory-read", { path: `memory://${id}` });
-				expect(JSON.stringify(row.content)).toContain("Advisor scoped memory marker.");
-				const match = await grep.execute("advisor-memory-grep", {
-					path: `memory://${id}`,
-					pattern: "Advisor scoped memory marker",
-				});
-				expect(JSON.stringify(match.content)).toContain("Advisor scoped memory marker.");
-			} else {
-				await expect(read.execute("advisor-memory-read", { path: "memory://some-id" })).rejects.toThrow(
-					"Hindsight memories are not addressable via memory://",
-				);
-			}
+			// Neither remaining backend exposes per-record `memory://` rows (the SQLite rows
+			// this half asserted belonged to the retired local store), so the id form must be
+			// refused too. The refusal wording is backend-specific; what is pinned is that the
+			// call cannot succeed.
+			await expect(read.execute("advisor-memory-read", { path: "memory://some-id" })).rejects.toThrow();
 		} finally {
 			await session?.dispose();
 			session = undefined;

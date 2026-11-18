@@ -94,7 +94,7 @@ Mnemopi:
 
 ## Limits & Caps
 
-- Tool availability requires `memory.backend` to be `"hindsight"`, `"mnemopi"`, or `"memvidkb"`; default `memory.backend` is `"off"`.
+- Tool availability requires `memory.backend` to be `"hindsight"`, `"mnemopi"`, or `"memvidkb"`; the selectable values are `"memvidkb"` (the default) and `"off"`, and the retired `hindsight`/`mnemopi` implementations still mount the tool when configured directly until they are removed.
 - Tool-level params: only `query` is required; `context` is optional. Both are plain strings with no schema-level minimum length.
 - Hindsight budget comes from `hindsight.recallBudget`, default `"mid"`.
 - Hindsight `reflect` has no client-side token cap parameter here; its request deadline defaults to `hindsight.reflectTimeoutMs = 120_000`.

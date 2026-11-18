@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +6,7 @@ import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { memvidkbBackend } from "@oh-my-pi/pi-coding-agent/memvidkb/backend";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -73,24 +74,31 @@ describe("createAgentSession auto-learn tool activation", () => {
 	});
 
 	it("initializes the selected memory backend before an auto-learn session can run", async () => {
-		const { session } = await createAgentSession({
-			cwd: registryDir,
-			agentDir: registryDir,
-			modelRegistry,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({
-				"autolearn.enabled": true,
-				"memory.backend": "hindsight",
-				"hindsight.apiUrl": "http://127.0.0.1:1",
-				"hindsight.mentalModelsEnabled": false,
-			}),
-			model: getBundledModel("openai", "gpt-4o-mini"),
-			...noDiscoveryOptions(),
-			toolNames: ["read"],
-		});
-		sessions.push(session);
+		// The arm's subject is initialisation ordering, not one backend's state: it used to
+		// probe the Hindsight session-state slot, which a selectable id never populates. It
+		// now spies the resolved backend's own `start`, so skipping the call reddens it.
+		const startSpy = spyOn(memvidkbBackend, "start").mockResolvedValue(undefined);
+		try {
+			const { session } = await createAgentSession({
+				cwd: registryDir,
+				agentDir: registryDir,
+				modelRegistry,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({
+					"autolearn.enabled": true,
+					// A selectable id: a retired id now refuses to resolve at all.
+					"memory.backend": "memvidkb",
+				}),
+				model: getBundledModel("openai", "gpt-4o-mini"),
+				...noDiscoveryOptions(),
+				toolNames: ["read"],
+			});
+			sessions.push(session);
 
-		expect(session.getHindsightSessionState()).toBeDefined();
+			expect(startSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			startSpy.mockRestore();
+		}
 	});
 
 	it("omits manage_skill from a restricted session when auto-learn is off", async () => {

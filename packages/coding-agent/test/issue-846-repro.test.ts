@@ -96,7 +96,9 @@ describe("issue #846: phase1 stage1 failures must be logged", () => {
 		await fs.writeFile(sessionFile, `${JSON.stringify({ type: "session", id: "current-thread", cwd: agentDir })}\n`);
 
 		const settings = Settings.isolated({
-			"memories.enabled": true,
+			// Stage-one error logging is a property of the retained rollout-summary pipeline; `local` is
+			// retired from the selector, so the suite drives the pipeline by naming the id it exercises.
+			"memory.backend": "local",
 			"memories.minRolloutIdleHours": 0,
 			"memories.maxRolloutsPerStartup": 4,
 			"memories.threadScanLimit": 64,

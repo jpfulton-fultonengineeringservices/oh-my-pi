@@ -42,11 +42,13 @@ describe("CommandController /memory stats and /memory diagnose", () => {
 	});
 
 	it("still names the backend when a real backend simply has no stats hook", async () => {
-		const { ctx, showWarning } = createMemoryContext("local");
+		// memvidkb has a stats hook, but it yields nothing for a workspace without a `.memvidkb`,
+		// which is the same shape as a backend with no hook at all: the message must name the backend.
+		const { ctx, showWarning } = createMemoryContext("memvidkb");
 		const controller = new CommandController(ctx);
 
 		await controller.handleMemoryCommand("/memory stats");
 
-		expect(showWarning).toHaveBeenCalledWith("Memory stats is not available for the local backend.");
+		expect(showWarning).toHaveBeenCalledWith("Memory stats is not available for the memvidkb backend.");
 	});
 });

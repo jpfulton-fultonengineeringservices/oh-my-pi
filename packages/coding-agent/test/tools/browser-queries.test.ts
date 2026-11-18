@@ -8,6 +8,8 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+// bun times a hook out after 5 s by default, less than killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 const session: ToolSession = {
 	cwd: process.cwd(),
 	hasUI: false,
@@ -114,7 +116,7 @@ beforeAll(async () => {
 afterAll(async () => {
 	await releaseAllTabs({ kill: true });
 	await disposeAllVmContexts();
-});
+}, BROWSER_HOOK_TIMEOUT_MS);
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser semantic selectors and queries", () => {
 	it("resolves semantic selector prefixes, role names, and exact role names", async () => {

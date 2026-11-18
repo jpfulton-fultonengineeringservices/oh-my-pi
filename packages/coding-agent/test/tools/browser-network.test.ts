@@ -10,6 +10,8 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+// bun times a hook out after 5 s by default, less than killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 const server = Bun.serve({
 	port: 0,
 	fetch(request) {
@@ -70,7 +72,7 @@ afterAll(async () => {
 	await disposeAllVmContexts();
 	server.stop(true);
 	await fs.rm(harPath, { force: true });
-});
+}, BROWSER_HOOK_TIMEOUT_MS);
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser network helpers", () => {
 	test("persists cooperative routes across runs and removes them with unroute", async () => {

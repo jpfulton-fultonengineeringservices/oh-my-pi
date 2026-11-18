@@ -17,6 +17,11 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { createMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend";
+import {
+	RETIRED_MEMORY_BACKENDS,
+	retiredMemoryBackendMessage,
+} from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
 import { loadMnemopiConfig, type MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -812,7 +817,10 @@ describe("global memory scope exposure", () => {
 		prompt: tool.description.includes("scope: global"),
 	});
 	const expectOffered = (session: ToolSession, offered: boolean) => {
-		expect(offersScope(LearnTool.createIf(session)!)).toEqual({ schema: offered, prompt: offered });
+		// Only the retain tool is asserted here. `learn` mounts for `memvidkb` alone (its own
+		// gating is covered in test/autolearn-tools-gating.test.ts and
+		// test/autolearn-learn-memvidkb.test.ts), so for these retired ids it has no schema to
+		// compare — asserting on it would test a tool that is never constructed.
 		expect(offersScope(MemoryRetainTool.createIf(session)!)).toEqual({ schema: offered, prompt: offered });
 	};
 	const memorySettings = (backend: "mnemopi" | "hindsight" | "local", overrides: Record<string, unknown> = {}) =>
@@ -829,13 +837,6 @@ describe("global memory scope exposure", () => {
 		["global", true],
 	] as const)("mnemopi backend with %s scoping offers scope: %p", (scoping, offered) => {
 		expectOffered(makeSession(memorySettings("mnemopi", { "mnemopi.scoping": scoping })), offered);
-	});
-
-	it("local backend never offers scope", () => {
-		const session = makeSession(
-			memorySettings("local", { "hindsight.globalScope": true, "mnemopi.scoping": "per-project-tagged" }),
-		);
-		expect(offersScope(LearnTool.createIf(session)!)).toEqual({ schema: false, prompt: false });
 	});
 
 	it.each([
@@ -885,165 +886,9 @@ describe("global memory scope exposure", () => {
 			}),
 		);
 		const retain = MemoryRetainTool.createIf(session)!;
-		const learn = LearnTool.createIf(session)!;
 		expect(retain.approval({ items: [{ content: "x" }, { content: "y", scope: "global" }] })).toBe("write");
 		expect(retain.approval({ items: [{ content: "x", scope: "project" }] })).toBe("read");
-		expect(learn.approval({ memory: "x", scope: "global" })).toBe("write");
-		expect(learn.approval({ memory: "x" })).toBe("read");
 	});
-});
-
-describe("learn.execute (Mnemopi backend)", () => {
-	let originalAgentDir: string;
-
-	beforeEach(() => {
-		resetSettingsForTest();
-		registeredMnemopiState = undefined;
-		tempDbDir = TempDir.createSync("@mnemopi-learn-");
-		tempDbPath = tempDbDir.join("mnemopi.db");
-		originalAgentDir = getAgentDir();
-		setAgentDir(tempDbDir.join("agent"));
-	});
-
-	afterEach(async () => {
-		vi.restoreAllMocks();
-		setAgentDir(originalAgentDir);
-		await registeredMnemopiState?.dispose();
-		registeredMnemopiState = undefined;
-		await tempDbDir?.remove();
-		tempDbDir = undefined;
-		tempDbPath = undefined;
-	});
-
-	it("stores an explicitly global lesson only in the shared bank", async () => {
-		const settings = Settings.isolated({ "memory.backend": "mnemopi", "autolearn.enabled": true });
-		const state = registerMnemopiState(
-			makeMnemopiConfig({
-				scoping: "per-project-tagged",
-				bank: "project-alpha",
-				globalBank: "default",
-				retainBank: "project-alpha",
-				recallBanks: ["project-alpha", "default"],
-			}),
-			{ cwd: "/work/project-alpha" },
-		);
-
-		await LearnTool.createIf(makeSession(settings))!.execute("learn-global", {
-			memory: "Use isolated temporary directories when verifying file writes across projects.",
-			scope: "global",
-		});
-
-		expect(state.memory.beam.db.query("SELECT content FROM working_memory").all()).toEqual([]);
-		expect(state.globalMemory!.beam.db.query("SELECT content FROM working_memory").all()).toEqual([
-			{ content: "Use isolated temporary directories when verifying file writes across projects." },
-		]);
-	});
-
-	it("rejects an unsupported global lesson before storing or minting a skill", async () => {
-		const settings = Settings.isolated({ "memory.backend": "mnemopi", "autolearn.enabled": true });
-		const state = registerMnemopiState(
-			makeMnemopiConfig({
-				scoping: "per-project",
-				bank: "project-alpha",
-				retainBank: "project-alpha",
-				recallBanks: ["project-alpha"],
-			}),
-		);
-
-		const error = await LearnTool.createIf(makeSession(settings))!
-			.execute("learn-unsupported-global", {
-				memory: "A cross-project lesson must not become project-local.",
-				scope: "global",
-				skill: { action: "create", name: "global-lesson", description: "Shared lesson.", body: "# Shared lesson" },
-			})
-			.catch((error: unknown) => error);
-		expect(error).toBeInstanceOf(Error);
-		expect((error as Error).message).toMatch(/requires global or per-project-tagged scoping/i);
-		expect((error as Error).message).not.toContain("Mnemopi did not store the lesson");
-		expect(state.memory.beam.db.query("SELECT content FROM working_memory").all()).toEqual([]);
-		expect(await Bun.file(path.join(getManagedSkillsDir(), "global-lesson", "SKILL.md")).exists()).toBe(false);
-	});
-});
-
-describe("learn.execute (Hindsight backend)", () => {
-	let originalAgentDir: string;
-	let agentTempDir: TempDir;
-
-	beforeEach(() => {
-		resetSettingsForTest();
-		registeredState = undefined;
-		agentTempDir = TempDir.createSync("@hindsight-learn-");
-		originalAgentDir = getAgentDir();
-		setAgentDir(agentTempDir.join("agent"));
-	});
-
-	afterEach(async () => {
-		vi.restoreAllMocks();
-		setAgentDir(originalAgentDir);
-		registeredState = undefined;
-		await agentTempDir.remove();
-	});
-
-	const hindsightSettings = () =>
-		Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-			"autolearn.enabled": true,
-		});
-
-	it("retains a global lesson untagged while project lessons keep the project tag", async () => {
-		const settings = hindsightSettings();
-		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
-		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
-		registerState(new HindsightApi({ baseUrl: "http://localhost:8888" }), settings, {
-			retainTags: ["project:alpha"],
-			config: { scoping: "per-project-tagged", globalScope: true },
-		});
-		const learn = LearnTool.createIf(makeSession(settings))!;
-
-		await learn.execute("learn-project", { memory: "alpha pins bun 1.3" });
-		await learn.execute("learn-global", {
-			memory: "Use isolated temporary directories when verifying file writes across projects.",
-			scope: "global",
-		});
-		await registeredState?.flushRetainQueue();
-
-		const retained = retainBatchSpy.mock.calls.flatMap(([, items]) =>
-			items.map(item => ({ content: item.content, tags: item.tags })),
-		);
-		expect(retained).toHaveLength(2);
-		expect(retained).toEqual(
-			expect.arrayContaining([
-				{ content: "alpha pins bun 1.3", tags: ["project:alpha"] },
-				{
-					content: "Use isolated temporary directories when verifying file writes across projects.",
-					tags: undefined,
-				},
-			]),
-		);
-	});
-
-	it.each(HINDSIGHT_GLOBAL_REJECTIONS)(
-		"rejects a global lesson %s before queueing or minting a skill",
-		async (_label, config, error) => {
-			const settings = hindsightSettings();
-			registerState(new HindsightApi({ baseUrl: "http://localhost:8888" }), settings, { config });
-
-			await expect(
-				LearnTool.createIf(makeSession(settings))!.execute("learn-unsupported-global", {
-					memory: "A cross-project lesson must not become project-local.",
-					scope: "global",
-					skill: {
-						action: "create",
-						name: "global-lesson",
-						description: "Shared lesson.",
-						body: "# Shared lesson",
-					},
-				}),
-			).rejects.toThrow(error);
-			expect(await Bun.file(path.join(getManagedSkillsDir(), "global-lesson", "SKILL.md")).exists()).toBe(false);
-		},
-	);
 });
 
 describe("Mnemopi backend lifecycle", () => {
@@ -2371,5 +2216,42 @@ describe("reflect.execute (Mnemopi backend)", () => {
 		await expect(tool.execute("call-mnemopi-reflect-no-state", { query: "anything" })).rejects.toThrow(
 			/not initialised/i,
 		);
+	});
+});
+
+describe("memory.backend retirement", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("mounts the memvidkb memory tools for a session that never chose a backend", () => {
+		// The retirement made the knowledge service the default, so a session with no
+		// `memory.backend` gets the KB verbs rather than no memory tools at all. This is
+		// the whole effect of the default flip on the tool surface: revert the default and
+		// `memory_list` disappears here.
+		expect(MemoryListTool.createIf(makeSession(Settings.isolated({})))).toBeInstanceOf(MemoryListTool);
+		// ...and `off` is still an explicit opt-out, not an absent default.
+		expect(MemoryListTool.createIf(makeSession(Settings.isolated({ "memory.backend": "off" })))).toBeNull();
+	});
+
+	it("refuses retired backends through the shared memory runtime the tools and /memory use", async () => {
+		// Tool factories gate on the raw setting and stay settings-driven; the selector is
+		// what retires a backend. A retired selection must therefore fail at the shared
+		// runtime entry point rather than report an empty `off` backend, which a caller
+		// would read as "the memory is empty" instead of "your config names a retired path".
+		for (const retired of RETIRED_MEMORY_BACKENDS) {
+			const memory = createMemoryRuntimeContext({
+				agentDir: "/tmp/agent",
+				cwd: "/tmp/project",
+				session: { settings: Settings.isolated({ "memory.backend": retired }) } as never,
+			});
+			const expected = retiredMemoryBackendMessage(retired);
+			await expect(memory.status()).rejects.toThrow(expected);
+			await expect(memory.list()).rejects.toThrow(expected);
+		}
 	});
 });

@@ -32,7 +32,7 @@ beforeAll(async () => {
 	if (!("browser" in launched)) throw new Error("Expected a Puppeteer browser");
 	holdBrowser(launched);
 	sharedHeadless = launched;
-});
+}, BROWSER_TEST_TIMEOUT_MS);
 
 function headless(): PuppeteerBrowserHandle {
 	if (!sharedHeadless?.browser.connected) throw new Error("Expected the shared headless browser");
@@ -77,7 +77,7 @@ afterAll(async () => {
 	await releaseAllTabs({ kill: true });
 	await disposeAllVmContexts();
 	if (sharedHeadless) await releaseBrowser(sharedHeadless, { kill: true });
-});
+}, BROWSER_TEST_TIMEOUT_MS);
 
 function servePage(body: string): Bun.Server<undefined> {
 	return Bun.serve({

@@ -7,6 +7,8 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+// bun times a hook out after 5 s by default, less than killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 // A shared promise, not a per-request resolver: releasing before Chrome's request reaches /slow still lets it finish.
 const slowRelease = Promise.withResolvers<void>();
 const server = Bun.serve({
@@ -53,7 +55,7 @@ afterAll(async () => {
 	await releaseAllTabs({ kill: true });
 	await disposeAllVmContexts();
 	server.stop(true);
-});
+}, BROWSER_HOOK_TIMEOUT_MS);
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser run page listeners", () => {
 	test("removes run-owned listeners and keeps worker listeners across runs", async () => {

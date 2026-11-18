@@ -17,6 +17,8 @@ import { rejectionOf } from "../helpers/rejection";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+// bun times a hook out after 5 s by default, less than killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 const session: ToolSession = {
 	cwd: process.cwd(),
 	hasUI: false,
@@ -143,7 +145,7 @@ async function crashWhileIdle(name: string): Promise<void> {
 afterAll(async () => {
 	await releaseAllTabs({ kill: true });
 	await disposeAllVmContexts();
-});
+}, BROWSER_HOOK_TIMEOUT_MS);
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser tab worker exit", () => {
 	it("fails the call at once and continues on the same page with a new worker", async () => {

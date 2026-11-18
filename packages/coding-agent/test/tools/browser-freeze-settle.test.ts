@@ -44,6 +44,8 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+// bun times a hook out after 5 s by default, less than launching or killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 function makeKind(socketSuffix: string): CmuxKind {
 	return { kind: "cmux", socketPath: `/tmp/omp-test-${socketSuffix}.sock`, surface: `surface-${socketSuffix}` };
 }
@@ -479,7 +481,7 @@ describe("browser settle — lifecycle freeze via CDP", () => {
 			} finally {
 				vi.restoreAllMocks();
 			}
-		});
+		}, BROWSER_HOOK_TIMEOUT_MS);
 
 		it("acquireTab records persist and activity; reuse preserves persist and refreshes activity", async () => {
 			mockCmuxSocket();
@@ -731,15 +733,15 @@ describe("browser settle — lifecycle freeze via CDP", () => {
 		beforeAll(async () => {
 			browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
 			holdBrowser(browser);
-		});
+		}, BROWSER_HOOK_TIMEOUT_MS);
 
 		afterAll(async () => {
 			await releaseBrowser(browser, { kill: true });
-		});
+		}, BROWSER_HOOK_TIMEOUT_MS);
 
 		afterEach(async () => {
 			await drainAllTabs();
-		});
+		}, BROWSER_HOOK_TIMEOUT_MS);
 
 		it("freezes at settle, resumes transparently on run, and idle-closes", async () => {
 			const session = makeSession(process.cwd());

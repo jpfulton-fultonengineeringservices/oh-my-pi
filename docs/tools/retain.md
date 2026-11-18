@@ -115,7 +115,7 @@ Mnemopi:
 ## Limits & Caps
 
 - Input schema requires `items.length >= 1`; item strings have no schema-level minimum length.
-- Tool availability requires `memory.backend` to be `"hindsight"` or `"mnemopi"`; default `memory.backend` is `"off"`.
+- Tool availability requires `memory.backend` to be `"hindsight"`, `"mnemopi"`, or `"memvidkb"`; the selectable values are `"memvidkb"` (the default) and `"off"`, and the retired `hindsight`/`mnemopi` implementations still mount the tool when configured directly until they are removed.
 - Hindsight queue flush threshold and request batch size: 16 events.
 - Hindsight outbox capacity: 1000 undelivered events per destination; a call that would exceed it fails without writing anything or evicting older events.
 - Hindsight outbox retention: undelivered events are quarantined 7 days after they were written; quarantined events are deleted 30 days after quarantine.

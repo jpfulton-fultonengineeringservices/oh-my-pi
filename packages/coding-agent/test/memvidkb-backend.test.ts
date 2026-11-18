@@ -15,6 +15,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { memvidkbBackend } from "../src/memvidkb/backend";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { resolveMemoryBackend } from "../src/memory-backend/resolve";
+import { RETIRED_MEMORY_BACKENDS, retiredMemoryBackendMessage } from "../src/memory-backend/settings";
 import type { MemoryBackendOperationContext, MemoryBackendSaveInput } from "../src/memory-backend/types";
 import { KNOWLEDGE_ERROR_PREFIX } from "../src/memvidkb/errors";
 
@@ -149,17 +150,19 @@ describe("memvidkb backend selection", () => {
 	beforeEach(() => resetSettingsForTest());
 	afterEach(() => resetSettingsForTest());
 
-	it("resolves to memvidkb without disturbing the backends that already worked", async () => {
+	it("resolves to memvidkb, leaves off alone, and refuses the retired backends", async () => {
 		expect((await resolveMemoryBackend(Settings.isolated({ "memory.backend": "memvidkb" }))).id).toBe("memvidkb");
 		expect((await resolveMemoryBackend(Settings.isolated({ "memory.backend": "off" }))).id).toBe("off");
-		expect((await resolveMemoryBackend(Settings.isolated({ "memory.backend": "local" }))).id).toBe("local");
-		expect((await resolveMemoryBackend(Settings.isolated({ "memory.backend": "hindsight" }))).id).toBe("hindsight");
-		expect((await resolveMemoryBackend(Settings.isolated({ "memory.backend": "mnemopi" }))).id).toBe("mnemopi");
-		expect((await resolveMemoryBackend(Settings.isolated({ "memory.backend": "sharpshooter" }))).id).toBe(
-			"sharpshooter",
-		);
-		// An unset value is not a selector: the default stays off.
-		expect((await resolveMemoryBackend(Settings.isolated({}))).id).toBe("off");
+		// The retirement made the knowledge service the default, so an unset value now
+		// selects it rather than leaving the session memoryless.
+		expect((await resolveMemoryBackend(Settings.isolated({}))).id).toBe("memvidkb");
+		// The retired ids no longer resolve: they raise rather than being replaced by
+		// whichever backend the default happens to name.
+		for (const retired of RETIRED_MEMORY_BACKENDS) {
+			await expect(resolveMemoryBackend(Settings.isolated({ "memory.backend": retired }))).rejects.toThrow(
+				retiredMemoryBackendMessage(retired),
+			);
+		}
 	});
 });
 

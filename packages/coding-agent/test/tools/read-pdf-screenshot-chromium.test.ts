@@ -24,6 +24,8 @@ const PAGE_COUNT = 8;
 // Each render has its own 30 s deadline; on a running browser they take about 1 s.
 const TEST_TIMEOUT_MS = PAGE_COUNT * 30_000;
 const IMAGE_SIZE = 1600;
+// bun times a hook out after 5 s by default, less than killing the browser takes on a loaded runner.
+const BROWSER_HOOK_TIMEOUT_MS = 30_000;
 
 /** Side of page `page`'s black square as a fraction of the page, distinct per page. */
 function squareFraction(page: number): number {
@@ -118,7 +120,7 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("PDF page screenshots in Chromium", () => {
 		if (browser) await releaseBrowser(browser, { kill: true });
 		browser = undefined;
 		await removeWithRetries(testDir);
-	});
+	}, BROWSER_HOOK_TIMEOUT_MS);
 
 	it(
 		"paints each requested image-only page instead of the empty viewer",

@@ -5,8 +5,9 @@ import type { MemoryBackendId } from "./types";
  * backend's hook is missing or returns nothing.
  *
  * The `off` backend isn't a real backend a user picked among several
- * stats-capable options — it's the no-op state memory falls back to by
- * default — so it gets its own message instead of the generic
+ * stats-capable options — it's the explicit no-op choice (`memory.backend:
+ * "off"`; the default is `memvidkb`, which stays inert until the workspace
+ * resolves a `.memvidkb`) — so it gets its own message instead of the generic
  * "not available for the X backend" template, which would otherwise read as
  * the self-contradictory "not available for the off backend".
  *

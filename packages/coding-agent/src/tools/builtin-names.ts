@@ -80,11 +80,13 @@ export const BUILTIN_TOOL_HELP: Record<BuiltinToolName, BuiltinToolHelp> = {
 	rewind: { summary: "Rewind to a saved checkpoint", defaultState: "off" },
 	context_notes: { summary: "Read or replace the session's persistent context notes", defaultState: "off" },
 	new_context: { summary: "Request a fresh context window after the current turn", defaultState: "off" },
-	retain: { summary: "Store facts in long-term memory", defaultState: "off" },
-	recall: { summary: "Search long-term memory", defaultState: "off" },
-	reflect: { summary: "Synthesize an answer from long-term memory", defaultState: "off" },
-	memory_edit: { summary: "Edit or forget long-term memories", defaultState: "off" },
-	memory_list: { summary: "List stored long-term memories without searching", defaultState: "off" },
+	// `memory.backend` now defaults to `memvidkb`, so a session that never configured memory gets these
+	// five tools; `omp --help` has to say so. They stay off only for a session that picks "off".
+	retain: { summary: "Store facts in long-term memory", defaultState: "on" },
+	recall: { summary: "Search long-term memory", defaultState: "on" },
+	reflect: { summary: "Synthesize an answer from long-term memory", defaultState: "on" },
+	memory_edit: { summary: "Edit or forget long-term memories", defaultState: "on" },
+	memory_list: { summary: "List stored long-term memories without searching", defaultState: "on" },
 	learn: { summary: "Capture reusable lessons in long-term memory", defaultState: "off" },
 	manage_skill: { summary: "Create, update, or delete managed skills", defaultState: "off" },
 	security_scan: { summary: "Run security scans", defaultState: "off" },

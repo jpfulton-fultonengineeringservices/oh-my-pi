@@ -14,6 +14,8 @@ import {
 	Settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { bindEffects } from "@oh-my-pi/pi-coding-agent/config/registry";
+import { resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/resolve";
+import { offBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/off-backend";
 
 import * as discovery from "@oh-my-pi/pi-coding-agent/discovery";
 import { editVariantForModel } from "@oh-my-pi/pi-coding-agent/utils/edit-mode";
@@ -2300,17 +2302,56 @@ describe("Settings", () => {
 			expect(cfgHindsightBankId.get(settings)).toBe("ada-cli");
 		});
 
-		it("migrates the legacy mnemosyne memory backend to mnemopi", async () => {
-			await writeSettings({
-				memory: { backend: "mnemosyne" },
-				mnemosyne: { dbPath: "/tmp/old.db", scoping: "global" },
-			});
+		it("migrates the legacy mnemosyne memory backend onto an accepted backend", async () => {
+			// The rename this migration used to perform produced `mnemopi`, which the selector now rejects,
+			// so asserting the old target here would certify a config that cannot boot. The settings block
+			// still moves (the retained runtime reads it); the selector value must land on something the
+			// selector accepts, and the operator must be told the pipeline is gone.
+			const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+			try {
+				await writeSettings({
+					memory: { backend: "mnemosyne" },
+					mnemosyne: { dbPath: "/tmp/old.db", scoping: "global" },
+				});
 
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
+				const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(cfgMemoryBackend.get(settings)).toBe("mnemopi");
-			expect(cfgMnemopiDbPath.get(settings)).toBe("/tmp/old.db");
-			expect(cfgMnemopiScoping.get(settings)).toBe("global");
+				expect(cfgMemoryBackend.get(settings)).toBe("off");
+				await expect(resolveMemoryBackend(settings)).resolves.toBe(offBackend);
+				expect(cfgMnemopiDbPath.get(settings)).toBe("/tmp/old.db");
+				expect(cfgMnemopiScoping.get(settings)).toBe("global");
+
+				// The value the migration produces is the value that lands on disk and boots: touch an
+				// unrelated key so a real save runs over the migrated tree (see "persists migrated
+				// consent/max keys"), then read the file back.
+				cfgDisplayShowTokenUsage.set(settings, true);
+				await settings.flush();
+
+				const onDisk = await readSettings();
+				expect((onDisk.display as Record<string, unknown>).showTokenUsage).toBe(true);
+				// The selector block specifically: the retired-namespace settings (`mnemopi.dbPath`, …) are
+				// retained data the runtime still reads, so the contract is on `memory.backend`.
+				const selectorBlock = (onDisk.memory ?? {}) as Record<string, unknown>;
+				expect(selectorBlock.backend).toBe("off");
+				const writtenSelector = JSON.stringify(selectorBlock);
+				for (const retired of ["local", "hindsight", "mnemopi", "sharpshooter"]) {
+					expect(writtenSelector).not.toContain(`"${retired}"`);
+				}
+
+				const reloaded = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+				await expect(resolveMemoryBackend(reloaded)).resolves.toBe(offBackend);
+
+				const notices = warnSpy.mock.calls
+					.map(call => String(call[0]))
+					.filter(message => message.includes("mnemosyne"));
+				expect(notices).toHaveLength(1);
+				expect(notices[0]).toContain("retired");
+				expect(notices[0]).toContain("memory.backend");
+				expect(notices[0]).toContain("no memory subsystem runs");
+				expect(notices[0]).toContain('Set memory.backend to "memvidkb"');
+			} finally {
+				warnSpy.mockRestore();
+			}
 		});
 
 		it("does not clobber an explicit mnemopi block when the legacy mnemosyne block is also present", async () => {
@@ -2322,6 +2363,56 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
 			expect(cfgMnemopiDbPath.get(settings)).toBe("/tmp/new.db");
+		});
+
+		it("migrates an enabled memories.enabled onto an accepted backend and warns once", async () => {
+			// `memories.enabled: true` used to select `local`, which the selector now rejects. The
+			// migration has to land on a value the selector accepts — one that wrote a retired id would
+			// hard-error every pre-existing config at startup — and has to say so, because "enabled" no
+			// longer means a memory subsystem runs at all.
+			const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+			try {
+				await writeSettings({ memories: { enabled: true } });
+
+				const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+				expect(cfgMemoryBackend.get(settings)).toBe("off");
+				await expect(resolveMemoryBackend(settings)).resolves.toBe(offBackend);
+
+				// The value the migration produces is the value that lands on disk and boots: touch an
+				// unrelated key so a real save runs over the migrated tree (see "persists migrated
+				// consent/max keys"), so the negative half below has a serialised file to speak about —
+				// a file the save never touched could not redden it.
+				cfgDisplayShowTokenUsage.set(settings, true);
+				await settings.flush();
+
+				const onDisk = await readSettings();
+				expect((onDisk.display as Record<string, unknown>).showTokenUsage).toBe(true);
+				// The selector block specifically: `memories.*` is a live registered namespace that the
+				// migration deliberately leaves in place, so the contract is on `memory.backend`.
+				const selectorBlock = (onDisk.memory ?? {}) as Record<string, unknown>;
+				expect(selectorBlock.backend).toBe("off");
+				const written = JSON.stringify(selectorBlock);
+				for (const retired of ["local", "hindsight", "mnemopi", "sharpshooter"]) {
+					expect(written).not.toContain(`"${retired}"`);
+				}
+
+				// A boot from the saved file must resolve, not hard-error before the notice is seen.
+				const reloaded = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+				await expect(resolveMemoryBackend(reloaded)).resolves.toBe(offBackend);
+
+				const notices = warnSpy.mock.calls
+					.map(call => String(call[0]))
+					.filter(message => message.includes("memories.enabled"));
+				expect(notices).toHaveLength(1);
+				expect(notices[0]).toContain("retired");
+				expect(notices[0]).toContain("memory.backend");
+				expect(notices[0]).toContain("memvidkb");
+				expect(notices[0]).toContain("no memory subsystem runs");
+				expect(notices[0]).toContain('Set memory.backend to "memvidkb"');
+			} finally {
+				warnSpy.mockRestore();
+			}
 		});
 
 		it("migrates boolean task.eager/todo.eager true to always", async () => {
