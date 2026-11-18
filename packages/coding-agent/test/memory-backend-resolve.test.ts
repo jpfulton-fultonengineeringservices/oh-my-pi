@@ -1,13 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { YAML } from "bun";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { SubmenuOption } from "@oh-my-pi/pi-tui/overlays/settings-defs";
-import { createMemoryRuntimeContext, resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend";
+import { createMemoryRuntimeContext, offBackend, resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend";
 import {
 	RETIRED_MEMORY_BACKENDS,
 	cfgMemoryBackend,
+	isLiveMemoryBackend,
 	isRetiredMemoryBackend,
 	retiredMemoryBackendMessage,
 } from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
+import { logger, TempDir } from "@oh-my-pi/pi-utils";
 
 describe("resolveMemoryBackend", () => {
 	beforeEach(() => {
@@ -147,5 +152,141 @@ describe("resolveMemoryBackend", () => {
 		const searched = await memory.search("project preference");
 		expect(searched).toMatchObject({ backend: "off", count: 0, items: [] });
 		expect(searched.message).toContain("not available for the off backend");
+	});
+});
+
+/**
+ * The load half of the retirement. A retired id an operator *stored* is not a choice being made
+ * now, so it must not take the session down with it: `#migrateRawSettings` normalises it to `off`
+ * before the selector ever sees it, the session boots with no memory subsystem, and startup logs
+ * what to change. The same id written at runtime is still refused. Both halves are pinned because
+ * the difference between them is one flag (`storedOnDisk`) on a single shared migration path.
+ */
+describe("a config stored on a retired memory backend", () => {
+	let tempDir: TempDir;
+	let agentDir: string;
+	let projectDir: string;
+	let configPath: string;
+
+	beforeEach(() => {
+		resetSettingsForTest();
+		tempDir = TempDir.createSync("@pi-retired-backend-config-");
+		agentDir = tempDir.join("agent");
+		projectDir = tempDir.join("project");
+		configPath = path.join(agentDir, "config.yml");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(projectDir, { recursive: true });
+	});
+
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		resetSettingsForTest();
+		await tempDir?.remove();
+	});
+
+	const load = () => Settings.loadIsolated({ cwd: projectDir, agentDir });
+	const retiredNotices = (spy: { mock: { calls: readonly (readonly unknown[])[] } }, needle: string) =>
+		spy.mock.calls.map(call => String(call[0])).filter(message => message.includes(needle));
+
+	for (const retired of RETIRED_MEMORY_BACKENDS) {
+		it(`boots a config stored on ${retired} with no memory subsystem instead of failing to start`, async () => {
+			await Bun.write(configPath, YAML.stringify({ memory: { backend: retired } }, null, 2));
+			const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+			const settings = await load();
+
+			// The selector sees `off`, so session creation — which awaits the resolve inside
+			// `rebuildSystemPrompt` with nothing catching it — reaches a backend instead of throwing.
+			expect(cfgMemoryBackend.get(settings)).toBe("off");
+			await expect(resolveMemoryBackend(settings)).resolves.toBe(offBackend);
+
+			// Silence would read as "memory quietly stopped working": the notice names the id, what
+			// replaced it, and the two values to choose between, exactly once per load.
+			const notices = retiredNotices(warn, `memory.backend: "${retired}"`);
+			expect(notices).toHaveLength(1);
+			expect(notices.join("\n")).toContain("memvidkb");
+		});
+	}
+
+	it("migrates the quoted-dotted leaf form as well as the nested block", async () => {
+		// YAML and the legacy JSON layer both allow a quoted dotted key, and the reader follows only
+		// the nested path. Leaving that form unmigrated would hand the operator the `memvidkb`
+		// default — a network knowledge service switched on for someone who had named a retired store.
+		await Bun.write(configPath, '"memory.backend": hindsight\n');
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const settings = await load();
+
+		expect(cfgMemoryBackend.get(settings)).toBe("off");
+		await expect(resolveMemoryBackend(settings)).resolves.toBe(offBackend);
+		expect(retiredNotices(warn, 'memory.backend: "hindsight"')).toHaveLength(1);
+	});
+
+	it("lets the nested block win over a stale dotted leaf, as every sibling migration does", async () => {
+		await Bun.write(
+			configPath,
+			YAML.stringify({ memory: { backend: "memvidkb" }, "memory.backend": "hindsight" }, null, 2),
+		);
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const settings = await load();
+
+		expect(cfgMemoryBackend.get(settings)).toBe("memvidkb");
+		expect(retiredNotices(warn, "is retired")).toHaveLength(0);
+	});
+
+	it("leaves the file alone until a save is due, then persists `off` and stops noticing", async () => {
+		await Bun.write(configPath, YAML.stringify({ memory: { backend: "sharpshooter" } }, null, 2));
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const settings = await load();
+
+		// Migration is read-time normalisation, not a rewrite: the file still names the retired id,
+		// which is why the notice repeats at each launch until the operator saves. Landing on `off`
+		// silently behind their back would leave a config that no longer says what it once did.
+		expect(YAML.parse(await Bun.file(configPath).text())).toEqual({ memory: { backend: "sharpshooter" } });
+		expect(retiredNotices(warn, 'memory.backend: "sharpshooter"')).toHaveLength(1);
+
+		// The first save carries the migrated value with it, and the result is no longer migration
+		// input — the migration's own output must not re-notice, or the operator is told the same
+		// thing again on the launch after they acted on it.
+		cfgMemoryBackend.set(settings, "off");
+		await settings.flush();
+		const saved = YAML.parse(await Bun.file(configPath).text()) as Record<string, unknown>;
+		expect(saved.memory).toEqual({ backend: "off" });
+
+		warn.mockClear();
+		const reloaded = await load();
+		expect(cfgMemoryBackend.get(reloaded)).toBe("off");
+		expect(retiredNotices(warn, "is retired")).toHaveLength(0);
+	});
+
+	it("still refuses the same id when a caller writes it at runtime", async () => {
+		// The other half of `storedOnDisk`. An override layer is a value being chosen now — a
+		// `/settings` or `set_command` write, a session overlay — so the selector's refusal has to
+		// stay reachable; migrating it too would turn every refused write into a silent `off`.
+		for (const retired of RETIRED_MEMORY_BACKENDS) {
+			const settings = Settings.isolated({ "memory.backend": retired });
+			expect(cfgMemoryBackend.get(settings)).toBe(retired);
+			await expect(resolveMemoryBackend(settings)).rejects.toThrow(retiredMemoryBackendMessage(retired));
+		}
+	});
+});
+
+describe("isLiveMemoryBackend", () => {
+	it("answers from the declaration, never by throwing at an undeclared value", () => {
+		expect(isLiveMemoryBackend("memvidkb")).toBe(true);
+		for (const retired of RETIRED_MEMORY_BACKENDS) expect(isLiveMemoryBackend(retired)).toBe(false);
+		// `off` is not a backend, so it mounts nothing — the same answer a retired id gives, for a
+		// different reason that the mount gates must not have to care about.
+		expect(isLiveMemoryBackend("off")).toBe(false);
+		// A value the registry warn-and-defaulted away from never arrives here as a backend, but the
+		// predicate is total: an id no one declared answers `false` rather than throwing on a list
+		// that does not contain it, and a mount gate must never be able to take a session down.
+		expect(isLiveMemoryBackend("vectorize")).toBe(false);
+		expect(isLiveMemoryBackend("")).toBe(false);
+		expect(isLiveMemoryBackend(undefined)).toBe(false);
+		expect(isLiveMemoryBackend(null)).toBe(false);
+		expect(isLiveMemoryBackend(7)).toBe(false);
+		expect(isLiveMemoryBackend(["memvidkb"])).toBe(false);
 	});
 });

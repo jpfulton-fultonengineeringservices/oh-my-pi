@@ -17,10 +17,17 @@ import type { MemoryBackend } from "./types";
  * leave a session believing it was on the retired path while a different store
  * answered its reads and writes.
  *
+ * A value *stored* in a config file no longer reaches the throw: `config/settings.ts` normalises a
+ * stored retired id to `off` while loading, so such a config boots with no memory subsystem and the
+ * operator reads the migration notice. What this still refuses is a retired id supplied at runtime
+ * — a `/settings` or `set_command` write, a session overlay — which is exactly where a silent
+ * substitution would go unnoticed.
+ *
  * `memories.enabled` remains accepted only as a legacy migration input. Once
  * a config is loaded, `memory.backend` is the sole runtime selector.
  *
- * @throws Error when the config still selects a retired backend.
+ * @throws Error when the setting still names a retired backend at resolve time — a runtime write;
+ * a value stored in a config file has already been migrated to `off`.
  */
 export async function resolveMemoryBackend(settings: Settings): Promise<MemoryBackend> {
 	const id = cfgMemoryBackend.get(settings);

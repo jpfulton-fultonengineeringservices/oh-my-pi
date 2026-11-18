@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 
@@ -419,5 +423,86 @@ describe("createTools", () => {
 		).map(t => t.name);
 		expect(names).toContain("checkpoint");
 		expect(names).toContain("rewind");
+	});
+});
+
+/**
+ * The mount half of the memory-backend retirement. Every memory gate in `tools/index.ts` reads
+ * `isLiveMemoryBackend`, which derives the live set from the selector's own declaration instead of
+ * re-listing ids: a retired id left in one of those lists mounted `recall`/`retain`/`reflect` for a
+ * config whose every call then threw inside `resolveMemoryBackend`, advertising a memory verb no
+ * backend could serve. Both routes a name can take are pinned — the default set and an explicit
+ * request — because the force-include and the allow-check are separate lists and either could leak.
+ */
+describe("createTools memory backend gating", () => {
+	const MEMORY_TOOL_NAMES = ["recall", "retain", "reflect", "memory_edit", "memory_list"];
+	const RETIRED_BACKENDS = ["local", "hindsight", "mnemopi", "sharpshooter"] as const;
+
+	/** `learn` is gated on the backend as well as on autolearn, so the checks below stay honest. */
+	const allMemoryToolNames = () => [...MEMORY_TOOL_NAMES, "learn"];
+
+	for (const backend of RETIRED_BACKENDS) {
+		it(`mounts no memory tool for the retired ${backend} backend`, async () => {
+			const settings = createSettingsWithOverrides({
+				"memory.backend": backend,
+				"autolearn.enabled": true,
+			});
+
+			const session = createTestSession({ settings });
+			const defaulted = (await createTools(session)).map(t => t.name);
+			// A built-in the plan allowed can still disappear from the returned list by being
+			// mounted as an xd:// device instead (the memory tools are `loadMode: "discoverable"`),
+			// so a leak has to be checked for on both routes.
+			const mounted = [...(session.xdev?.mountedNames ?? [])];
+			for (const name of allMemoryToolNames()) {
+				expect(defaulted).not.toContain(name);
+				expect(mounted).not.toContain(name);
+			}
+
+			// The other route a name can take: an explicit request. The force-include and the
+			// allow-check are separate lists, and `tools: ["recall"]` must not resurrect the
+			// retired call path either.
+			const requested = (await createTools(createTestSession({ settings }), ["read", ...allMemoryToolNames()])).map(
+				t => t.name,
+			);
+			for (const name of allMemoryToolNames()) expect(requested).not.toContain(name);
+			// The request itself is honoured — the absence above is the gate refusing, not the
+			// whole list being dropped.
+			expect(requested).toContain("read");
+		});
+	}
+
+	it("mounts the memory tools for the live backend", async () => {
+		// The positive control for the loop above: with a retired id and a live id both mounting
+		// nothing, the absence assertions would pass against a gate that refused everything.
+		// The request is explicit because the default route hands discoverable built-ins to xd://;
+		// naming them keeps them callable as tools, which is what the gate is deciding.
+		const agentDir = TempDir.createSync("@memvidkb-tool-mount-");
+		const originalAgentDir = getAgentDir();
+		try {
+			setAgentDir(agentDir.path());
+			await fs.writeFile(
+				path.join(agentDir.path(), ".memvidkb"),
+				JSON.stringify({
+					schema: 1,
+					baseUrl: "http://127.0.0.1:9",
+					tracks: { kb: { enabled: true, default: true } },
+					consent: { discover: "on", remember: "ask", reflect: "on", share: "off" },
+				}),
+				"utf8",
+			);
+			const settings = createSettingsWithOverrides({
+				"memory.backend": "memvidkb",
+				"autolearn.enabled": true,
+			});
+
+			const names = (await createTools(createTestSession({ settings }), ["read", ...allMemoryToolNames()])).map(
+				t => t.name,
+			);
+			for (const name of allMemoryToolNames()) expect(names).toContain(name);
+		} finally {
+			setAgentDir(originalAgentDir);
+			await agentDir.remove();
+		}
 	});
 });

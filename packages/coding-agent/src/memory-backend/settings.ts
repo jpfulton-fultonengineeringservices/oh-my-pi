@@ -3,15 +3,21 @@
  * settings-panel order; `config/all-settings.ts` registers every domain.
  */
 import { register } from "../config/registry";
+import type { MemoryBackendId } from "./types";
 
 /**
  * Memory backends retired by the memvid-kb-rs cutover: the local rollout summary
  * pipeline and the three third-party stores it replaces.
  *
- * Retired means *unreachable through the single selector*: the settings panel no
- * longer offers the value, and {@link resolveMemoryBackend} refuses it with
- * {@link retiredMemoryBackendMessage} instead of quietly handing back a different
- * backend. The retired implementations and their settings deliberately stay in the
+ * Retired means *unreachable in a running session*: the settings panel no longer offers the
+ * value, {@link isLiveMemoryBackend} refuses to mount a memory tool for it, and
+ * {@link resolveMemoryBackend} refuses it with {@link retiredMemoryBackendMessage} instead of
+ * quietly handing back a different backend. A value *stored* in a config file never gets that
+ * far — `config/settings.ts` migrates it to `off` at load and logs the notice, so the session
+ * boots with no memory subsystem rather than failing to start; a retired id written at runtime
+ * is what the selector still refuses.
+ *
+ * The retired implementations and their settings deliberately stay in the
  * tree (deleting them is a separate change), so `MemoryBackendId` still names every
  * id and each backend's own unit tests still construct it directly.
  */
@@ -37,13 +43,38 @@ export function isRetiredMemoryBackend(value: unknown): value is RetiredMemoryBa
 }
 
 /**
+ * Whether `value` names a backend that is still live: an id {@link cfgMemoryBackend} declares,
+ * minus {@link RETIRED_MEMORY_BACKENDS}, minus the explicit `off` (not a backend at all, so it
+ * mounts nothing). Today that is `memvidkb` alone.
+ *
+ * Every memory-tool gate in `tools/index.ts` reads this rather than re-literalising backend ids.
+ * A retired id left in one of those lists is exactly the leak this retirement exists to close:
+ * the tool mounts, the session advertises a memory verb, and the call then throws
+ * {@link retiredMemoryBackendMessage} from inside {@link resolveMemoryBackend}. Deriving the
+ * live set from the declaration, instead of hand-listing the surviving id at each gate, is what
+ * keeps a fifth copy from drifting.
+ */
+export function isLiveMemoryBackend(value: unknown): value is MemoryBackendId {
+	if (typeof value !== "string" || value === "off") return false;
+	// `?? []` keeps this total: a value the registry warn-and-defaulted away from, or a non-enum
+	// declaration, answers `false` rather than throwing on a missing list.
+	return (cfgMemoryBackend.enumValues ?? []).includes(value) && !isRetiredMemoryBackend(value);
+}
+
+/**
  * The refusal for a config that still selects a retired backend: names the retired id,
  * says what replaced it, and names both supported selections.
  *
  * A retired id must never resolve to another backend silently — the operator would go
  * on believing the retired path was active while a different store answered their
- * `retain`/`recall` calls. Nothing runs in its place: the session disposes the memory
- * state and unmounts the memory tools when this throws.
+ * `retain`/`recall` calls. Nothing is substituted for it.
+ *
+ * A value read from a config file no longer reaches this message: `#migrateRawSettings`
+ * normalises a stored retired id to `off` at load (see `config/settings.ts`), so such a session
+ * boots with no memory subsystem and the operator sees the migration notice instead. What still
+ * throws here is a value supplied at runtime — `set_command`/`omp config set`, a session
+ * override — where the selector's refusal is the only thing standing between the caller and a
+ * session that believes a retired store is answering it.
  */
 export function retiredMemoryBackendMessage(backend: RetiredMemoryBackendId): string {
 	return (

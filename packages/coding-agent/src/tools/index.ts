@@ -106,7 +106,7 @@ import { cfgPythonInterpreter } from "../eval/settings";
 import { cfgExternalThinking } from "../session/settings";
 import { cfgGoalEnabled } from "../goals/settings";
 import { cfgLspEnabled } from "../lsp/settings";
-import { cfgMemoryBackend } from "../memory-backend/settings";
+import { cfgMemoryBackend, isLiveMemoryBackend } from "../memory-backend/settings";
 import { cfgTaskMaxRecursionDepth } from "../task/settings";
 
 export * from "../edit";
@@ -673,6 +673,9 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			? normalizeToolNames(toolNames)
 			: undefined;
 	const goalEnabled = cfgGoalEnabled.get(session.settings);
+	// Read once for the whole plan: the memory gates below must not straddle a settings change
+	// made while the plan is being built, and every one of them asks the same question of it.
+	const memoryBackendId = cfgMemoryBackend.get(session.settings);
 	const goalModeActive = !restrictToolNames && goalEnabled && session.getGoalModeState?.()?.enabled === true;
 	const externalThinkingActive =
 		cfgExternalThinking.get(session.settings) && supportsExternalThinking(session.getActiveModel?.());
@@ -748,18 +751,18 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		) {
 			requestedTools.push("ast_edit");
 		}
-		if (["hindsight", "mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings))) {
+		// Only a live backend's tools are force-included. A retired id used to appear here, which
+		// mounted `recall`/`retain`/`reflect` for a config whose every call then threw inside
+		// `resolveMemoryBackend`; `off` mounts nothing, as before. See `isLiveMemoryBackend`.
+		if (isLiveMemoryBackend(memoryBackendId)) {
 			for (const name of ["recall", "retain", "reflect"]) {
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
-		if (
-			["mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings)) &&
-			!requestedTools.includes("memory_edit")
-		) {
+		if (isLiveMemoryBackend(memoryBackendId) && !requestedTools.includes("memory_edit")) {
 			requestedTools.push("memory_edit");
 		}
-		if (cfgMemoryBackend.get(session.settings) === "memvidkb" && !requestedTools.includes("memory_list")) {
+		if (isLiveMemoryBackend(memoryBackendId) && !requestedTools.includes("memory_list")) {
 			requestedTools.push("memory_list");
 		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
@@ -773,7 +776,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		// tool whitelist must never be silently widened with write-capable tools.
 		if (cfgAutolearnEnabled.get(session.settings) && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
-			if (isLearnCapableBackend(cfgMemoryBackend.get(session.settings)) && !requestedTools.includes("learn")) {
+			if (isLearnCapableBackend(memoryBackendId) && !requestedTools.includes("learn")) {
 				requestedTools.push("learn");
 			}
 		}
@@ -824,12 +827,12 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			);
 		}
 		if (name === "retain" || name === "recall" || name === "reflect") {
-			return ["hindsight", "mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings));
+			return isLiveMemoryBackend(memoryBackendId);
 		}
 		if (name === "memory_edit") {
-			return ["mnemopi", "memvidkb"].includes(cfgMemoryBackend.get(session.settings));
+			return isLiveMemoryBackend(memoryBackendId);
 		}
-		if (name === "memory_list") return cfgMemoryBackend.get(session.settings) === "memvidkb";
+		if (name === "memory_list") return isLiveMemoryBackend(memoryBackendId);
 		if (name === "manage_skill")
 			return (
 				cfgAutolearnEnabled.get(session.settings) &&
@@ -839,7 +842,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			return (
 				cfgAutolearnEnabled.get(session.settings) &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined) &&
-				isLearnCapableBackend(cfgMemoryBackend.get(session.settings))
+				isLearnCapableBackend(memoryBackendId)
 			);
 		}
 		if (name === "task") {

@@ -37,7 +37,12 @@ import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
-import { RETIRED_MEMORY_BACKENDS } from "../memory-backend/settings";
+import {
+	RETIRED_MEMORY_BACKENDS,
+	isRetiredMemoryBackend,
+	type RetiredMemoryBackendId,
+	retiredMemoryBackendMessage,
+} from "../memory-backend/settings";
 import { AgentStorage, type AgentStorageApi } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { writeFileAtomically } from "../utils/atomic-file";
@@ -449,7 +454,7 @@ function stringArrayFromUnknown(value: unknown): string[] {
 
 /**
  * Shared tail of every retired-memory-backend migration notice: what is retired and what to set instead.
- * Kept in one place so the two notices cannot drift apart on the part an operator acts on.
+ * Kept in one place so the notices cannot drift apart on the part an operator acts on.
  */
 const RETIRED_MEMORY_BACKEND_HINT =
 	`Retired memory backends: ${RETIRED_MEMORY_BACKENDS.join(", ")}. Set memory.backend to "memvidkb" ` +
@@ -457,25 +462,41 @@ const RETIRED_MEMORY_BACKEND_HINT =
 	"no memory subsystem runs.";
 
 /**
+ * The sentence every stored-retirement migration ends with, shared by all three notices so none of
+ * them restates on its own what the value became. `retired` — the only part each notice owns —
+ * names what the config held and what replaced it.
+ */
+function retiredMigrationNotice(retired: string): string {
+	return `${retired} memory.backend is now "off", so no memory subsystem runs. ${RETIRED_MEMORY_BACKEND_HINT}`;
+}
+
+/**
  * What an operator is told when `memories.enabled: true` turns out to have been selecting the retired
  * `local` backend: the flag's old meaning is gone, and silence would read as "memory quietly stopped
  * working". Names the ids, the replacement and the setting to edit.
  */
-const RETIRED_MEMORIES_ENABLED_MIGRATION_WARNING =
+const RETIRED_MEMORIES_ENABLED_MIGRATION_WARNING = retiredMigrationNotice(
 	'memories.enabled: true selected the retired "local" memory backend — the local rollout-summary ' +
-	'pipeline, superseded by the memvid-kb-rs knowledge service. memory.backend is now "off", so no ' +
-	"memory subsystem runs. " +
-	RETIRED_MEMORY_BACKEND_HINT;
+		"pipeline, superseded by the memvid-kb-rs knowledge service.",
+);
 
 /**
  * Same notice for the pre-rename id: `memory.backend: "mnemosyne"` named the retired `mnemopi` pipeline,
  * and the rename this migration used to perform now produces a value the selector rejects.
  */
-const RETIRED_MNEMOSYNE_MIGRATION_WARNING =
+const RETIRED_MNEMOSYNE_MIGRATION_WARNING = retiredMigrationNotice(
 	'memory.backend: "mnemosyne" named the retired "mnemopi" memory backend — the same local ' +
-	"rollout-summary pipeline, superseded by the memvid-kb-rs knowledge service. " +
-	'memory.backend is now "off", so no memory subsystem runs. ' +
-	RETIRED_MEMORY_BACKEND_HINT;
+		"rollout-summary pipeline, superseded by the memvid-kb-rs knowledge service.",
+);
+
+/**
+ * Same notice for a config that stores one of the retired ids outright. The part naming the id and
+ * its replacement is the selector's own refusal wording, reused rather than written out a third
+ * time, so a change to `retiredMemoryBackendMessage` reaches the startup notice as well.
+ */
+function retiredStoredBackendMigrationWarning(id: RetiredMemoryBackendId): string {
+	return retiredMigrationNotice(retiredMemoryBackendMessage(id));
+}
 
 /**
  * Migrate a v17 leaf rename that used to nest under a boolean parent path
@@ -805,7 +826,9 @@ export class Settings {
 			const value = overrides[key];
 			if (value !== undefined) setByPath(raw, key.split("."), value);
 		}
-		const layer = this.#migrateRawSettings(raw);
+		// A runtime `overrides` layer is a write, not a stored config, so retired ids stay exactly as
+		// the caller named them and the selector still refuses them (see #migrateRawSettings).
+		const layer = this.#migrateRawSettings(raw, true, false);
 		assertKnownSettingPaths(layer);
 		for (const setting of allSettings()) {
 			const value = getByPath(layer, setting.segments);
@@ -3001,8 +3024,17 @@ export class Settings {
 		logger.warn(`Settings: ${message}`);
 	}
 
-	/** Apply schema migrations to raw settings */
-	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
+	/**
+	 * Apply schema migrations to raw settings.
+	 *
+	 * @param storedOnDisk `false` for a layer handed to the constructor at runtime — the `overrides`
+	 * of `Settings.isolated`/`overlay`, which are a value being *written now*, not one a previous
+	 * omp persisted. Those keep naming retired ids: the selector's refusal, and the retired-id
+	 * suites that drive the retained implementations by naming the id they exercise, are only
+	 * observable while a runtime write is left alone. Config-file loads — the global file, project
+	 * and `--config` files, and the legacy import — pass the default `true`.
+	 */
+	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true, storedOnDisk = true): RawSettings {
 		// queueMode -> steeringMode
 		if ("queueMode" in raw && !("steeringMode" in raw)) {
 			raw.steeringMode = raw.queueMode;
@@ -3389,6 +3421,39 @@ export class Settings {
 		if ("mnemosyne" in raw && !("mnemopi" in raw)) {
 			raw.mnemopi = raw.mnemosyne;
 			delete raw.mnemosyne;
+		}
+
+		// A config that still stores a retired id outright (`memory.backend: "hindsight"`) is refused
+		// by the selector, and that refusal sits on the session-creation critical path:
+		// `rebuildSystemPrompt` awaits `resolveMemoryBackend` and nothing between there and
+		// `createAgentSession` catches, so such a config does not come up at all. It is normalised to
+		// `off` at load exactly like `memories.enabled` and `mnemosyne` above. The invariant those
+		// blocks state — no migration may write a value the selector refuses — reads just as well in
+		// this direction: no *stored* value may survive into the selector either. It lands on `off`
+		// rather than `memvidkb` for the same reason given there: switching on a network knowledge
+		// service nobody asked for is not a config migration's to make.
+		//
+		// Both raw shapes this key can take in a user config are handled, as the sibling migrations
+		// do: nested (`memory: { backend: … }`) and the quoted-dotted leaf (`"memory.backend": …`),
+		// which YAML and legacy JSON both allow. The reader follows only the nested path, so a config
+		// holding just the dotted form would silently get the `memvidkb` default — a knowledge
+		// service switched on for an operator who had named a retired store. Nested wins when both
+		// are present, matching `migrateNestedLeafRename`; the dotted key is then removed like every
+		// other legacy flat key in this function.
+		//
+		// A runtime write of a retired id is deliberately left alone — see the `storedOnDisk` gate on
+		// #migrateRawSettings — so `/settings`, `set_command` and `resolveMemoryBackend` still refuse
+		// it. Idempotent: once this has run, neither shape names a retired id.
+		if (storedOnDisk) {
+			const nestedBackend = isRecord(memoryBackendObj) ? memoryBackendObj.backend : undefined;
+			const configuredBackend = typeof nestedBackend === "string" ? nestedBackend : raw["memory.backend"];
+			if (isRetiredMemoryBackend(configuredBackend)) {
+				const migrated: Record<string, unknown> = isRecord(memoryBackendObj) ? memoryBackendObj : {};
+				migrated.backend = "off";
+				raw.memory = migrated;
+				delete raw["memory.backend"];
+				this.#warnRetiredMemoryBackend(retiredStoredBackendMigrationWarning(configuredBackend));
+			}
 		}
 
 		// hindsight: dynamicBankId/agentName -> scoping enum + bankId

@@ -36,7 +36,9 @@ Switching backends mid-session immediately replaces the live backend, memory too
 
 ### Retired backends
 
-`local`, `hindsight`, `mnemopi`, and `sharpshooter` are retired. The selector refuses a retired id with an error naming what replaced it rather than falling back to a different store, and the settings panel no longer offers them. A session started from a config left on a retired id fails to start with that error, so the operator is told to change the setting instead of silently running a different store:
+`local`, `hindsight`, `mnemopi`, and `sharpshooter` are retired. The settings panel no longer offers them, and nothing is ever substituted for one: a retired id never resolves to a different store behind the operator's back.
+
+A config left on a retired id migrates at load: `memory.backend` becomes `off`, the session boots with no memory subsystem, and startup logs a notice naming the retired id, what replaced it, and the two values to choose between. The migration does not rewrite the file by itself, so the notice repeats at each launch until the setting is saved. What is still *refused* is a retired id written at runtime — `/settings`, `set_command`, `omp config set` — which raises the actionable error naming the replacement instead of taking effect:
 
 ```yaml
 memory:
@@ -50,7 +52,7 @@ memory:
 | `mnemopi`      | memvid-kb-rs knowledge service; was the local Mnemopi SQLite store (formerly `mnemosyne`)                     |
 | `sharpshooter` | memvid-kb-rs knowledge service; was the friction-gated project-decision store                                 |
 
-The retired implementations and their settings namespaces are still in the tree, pending a separate removal; they are unreachable through the selector, the settings panel, and the memory tools. The settings enum still accepts the four retired ids so that an existing config loads instead of failing to parse; they are refused at resolve time, before any backend is constructed, with an actionable notice.
+The retired implementations and their settings namespaces are still in the tree, pending a separate removal; they are unreachable through the selector, the settings panel, and the memory tools — the memory tools mount only for a live backend, so a retired id gets no `recall`, `retain`, `reflect`, `memory_edit`, `memory_list` or `learn`. The settings enum still accepts the four retired ids so that an existing config loads instead of failing to parse; the value stays observable to a direct reader, and any retired id that reaches the selector is refused there, before a backend is constructed, with an actionable notice.
 
 ### `memories.enabled`
 
