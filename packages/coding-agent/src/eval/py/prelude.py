@@ -4,7 +4,7 @@ from __future__ import annotations
 if "__omp_prelude_loaded__" not in globals():
     __omp_prelude_loaded__ = True
     from pathlib import Path
-    import asyncio, collections.abc, contextvars, inspect, os, json, math, re, time, types, typing
+    import asyncio, collections.abc, contextvars, inspect, os, json, math, re, sys, time, types, typing
     from urllib.parse import unquote
 
 
@@ -1155,8 +1155,10 @@ if "__omp_prelude_loaded__" not in globals():
         return WorkPool(result["name"], result.get("agent"), result.get("limit"))
 
     def log(message):
-        """Emit a status ``log`` event for TUI rendering."""
-        _emit_status("log", message=str(message))
+        """Write a progress line to stdout and emit a status ``log`` event for TUI rendering."""
+        text = str(message)
+        sys.stdout.write(f"{text}\n")
+        _emit_status("log", message=text)
         return None
 
     def phase(title):

@@ -685,7 +685,12 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 		return new WorkPool(result.name, result.agent, result.limit);
 	};
 
-	const log = message => globalThis.__omp_emit_status__("log", { message: String(message) });
+	// `log` prints like `print` — so the line reaches the cell's stdout and the model-visible
+	// result — and also emits the status event, which is what the TUI card renders.
+	const log = message => {
+		globalThis.__omp_log__("log", message);
+		globalThis.__omp_emit_status__("log", { message: String(message) });
+	};
 
 	const phase = title => {
 		globalThis.__omp_phase__ = String(title);
