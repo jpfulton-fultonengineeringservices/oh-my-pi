@@ -37,6 +37,8 @@ const TOKEN = "kb-parity-test-bearer";
 const TOKEN_ENV = "MEMVIDKB_PARITY_TEST_TOKEN";
 const RECORD_ID = "rec-42";
 const RECORD_URI = "mv2://dev/rec-42";
+/** The `capturedAt` the stub's record detail reports — the read-back proof a destructive edit needs. */
+const CAPTURED_AT = "2026-11-16T04:00:00Z";
 
 type Recorded = { method: string; path: string; search: string; body: string };
 
@@ -330,25 +332,24 @@ describe("memory_edit verbs", () => {
 			op: "update",
 			id: RECORD_ID,
 			content: "Roll the router before the gateway.",
+			expected_captured_at: CAPTURED_AT,
 		});
 
-		expect(requests).toHaveLength(1);
-		expect(requests[0]?.method).toBe("POST");
-		expect(requests[0]?.path).toBe(`/memories/dev/records/${RECORD_ID}/supersede`);
-		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
-		// `title` is a documented SupersedeRequest field now (the server no longer
-		// fabricates the successor's title from the prior); it carries the derived
-		// first line of the corrected text, and no other key rides the wire.
-		expect(Object.keys(body).sort()).toEqual(["content", "originActor", "title"]);
+		// The proof is checked against a read of the row, so the write is preceded by that read.
+		expect(requests.map(request => `${request.method} ${request.path}`)).toEqual([
+			`GET /memories/dev/records/${RECORD_ID}`,
+			`POST /memories/dev/records/${RECORD_ID}/supersede`,
+		]);
+		const body = JSON.parse(requests[1]?.body ?? "{}") as Record<string, unknown>;
+		expect(Object.keys(body).sort()).toEqual(["content", "originActor"]);
 		expect(body["content"]).toBe("Roll the router before the gateway.");
-		expect(body["title"]).toBe("Roll the router before the gateway.");
 		expect(text(result)).toContain(RECORD_ID);
 		expect(text(result)).toContain("rec-43");
 	});
 
 	it("resolves the id to its uri before erasing, so a delete cannot address the wrong row", async () => {
 		const tool = MemoryEditTool.createIf(makeSession(memvidkbSettings()))!;
-		await tool.execute("edit-forget", { op: "forget", id: RECORD_ID });
+		await tool.execute("edit-forget", { op: "forget", id: RECORD_ID, expected_captured_at: CAPTURED_AT });
 
 		expect(requests.map(request => `${request.method} ${request.path}`)).toEqual([
 			`GET /memories/dev/records/${RECORD_ID}`,
@@ -422,15 +423,10 @@ describe("memory tools route to the knowledge service", () => {
 		expect(requests[0]?.path).toBe("/memories/dev/records");
 		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
 		expect(body["content"]).toBe("The gateway must be restarted before the router.");
-		// The caller's `context` never titles the record — distinct records sharing a
-		// context would be indistinguishable — it rides as a `context=` tag; the title is
-		// derived from the record's own first line.
-		expect(body["title"]).toBe("The gateway must be restarted before the router.");
-		expect(body["tags"]).toEqual(["context=deploy"]);
+		// `context` has no wire counterpart; the backend carries it as the record's display `title`.
+		expect(body["title"]).toBe("deploy");
 		expect(body["context"]).toBeUndefined();
-		// The id belongs in the text the model reads, not only in `details`: it is the
-		// handle `memory_edit` takes back, and this arm is what proves it is reported.
-		expect(text(result)).toBe(`1 memory stored. id=${RECORD_ID}`);
+		expect(text(result)).toBe("1 memory stored.");
 		// The tell-tale of a silent fallback: the local backend appends lessons to
 		// learned.md under the agent dir. A routed retain never creates it.
 		expect(findNamed(temp.path(), "learned.md")).toEqual([]);
