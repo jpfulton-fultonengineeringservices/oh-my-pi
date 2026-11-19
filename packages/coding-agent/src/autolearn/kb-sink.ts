@@ -43,7 +43,7 @@ export const KB_CAPTURE_SOURCE = "coding-agent-learn";
 export interface KbLessonCapture {
 	/** The durable lesson text. */
 	readonly memory: string;
-	/** Optional source context, carried as the record's display title. */
+	/** Optional source context, carried as a `context=<value>` tag on the record, never as its title. */
 	readonly context?: string;
 }
 
@@ -53,7 +53,7 @@ export interface KbSkillCapture {
 	readonly name: string;
 	/** One-line "when to use" text from the same payload that produced the frontmatter. */
 	readonly description: string;
-	/** Optional source context, carried as the record's display title. */
+	/** Optional source context, carried as a `context=<value>` tag on the record, never as its title. */
 	readonly context?: string;
 }
 

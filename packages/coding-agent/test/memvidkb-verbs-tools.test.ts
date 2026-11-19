@@ -418,8 +418,11 @@ describe("memory tools route to the knowledge service", () => {
 		expect(requests[0]?.path).toBe("/memories/dev/records");
 		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
 		expect(body["content"]).toBe("The gateway must be restarted before the router.");
-		// `context` has no wire counterpart; the backend carries it as the record's display `title`.
-		expect(body["title"]).toBe("deploy");
+		// The caller's `context` never titles the record — distinct records sharing a
+		// context would be indistinguishable — it rides as a `context=` tag; the title is
+		// derived from the record's own first line.
+		expect(body["title"]).toBe("The gateway must be restarted before the router.");
+		expect(body["tags"]).toEqual(["context=deploy"]);
 		expect(body["context"]).toBeUndefined();
 		// The id belongs in the text the model reads, not only in `details`: it is the
 		// handle `memory_edit` takes back, and this arm is what proves it is reported.

@@ -105,6 +105,42 @@ function originActorFor(input: MemoryBackendSaveInput): string {
 	return source && source.length > 0 ? source : SYSTEM_ORIGIN_ACTOR;
 }
 
+/** Cap on the title derived from a record's own text; a title labels a listing row, the body has its own field. */
+const REMEMBER_TITLE_MAX_CHARS = 80;
+
+/** Prefix that marks the caller's `context` as a carried label, so it stays machine-recoverable among free tags. */
+const REMEMBER_CONTEXT_TAG_PREFIX = "context=";
+
+/**
+ * Display title for a remembered record, derived from the record's own first line.
+ *
+ * The title is how operators tell records apart in a listing before erasing one, so it
+ * must be content-distinct — which caller-supplied framing never is. Two distinct records
+ * written under the same `context` sharing that context as their title cost an
+ * erase-by-mistake once the data was live; deriving the label from the text itself makes
+ * distinct content yield distinct titles. Bound to the first line and capped, because a
+ * title is a label, not a second copy of the body.
+ */
+function rememberTitle(content: string): string {
+	const firstLine = content.split("\n", 1)[0]?.trim() ?? "";
+	const chars = Array.from(firstLine);
+	return chars.length > REMEMBER_TITLE_MAX_CHARS
+		? `${chars.slice(0, REMEMBER_TITLE_MAX_CHARS - 1).join("")}…`
+		: firstLine;
+}
+
+/**
+ * The caller's `context` as a `context=<value>` tag, or nothing when absent or blank.
+ *
+ * A tag is a label the record keeps: it lists and filters beside the caller's own tags and
+ * never impersonates the record's identity the way a shared title does.
+ */
+function rememberTags(context: string | undefined): string[] | undefined {
+	const trimmed = context?.trim();
+	if (trimmed === undefined || trimmed.length === 0) return undefined;
+	return [`${REMEMBER_CONTEXT_TAG_PREFIX}${trimmed}`];
+}
+
 /**
  * Render one service-supplied value as a markdown table cell.
  *
@@ -601,14 +637,19 @@ export const memvidkbBackend = {
 		// `input.importance` has no counterpart in `RememberRequest`, so it is not sent:
 		// inventing a tag or folding it into the text would put data on the wire the service
 		// never documented. The caller is told on the result rather than left believing it
-		// was stored. `context` maps to the record's display `title`, the only free-text
-		// framing field the DTO has, so it is carried rather than dropped.
+		// was stored. `input.context` never becomes the display `title`: two distinct records
+		// written under the same context would share a title, and the title is how operators
+		// tell records apart before erasing one — a shared caller-written title cost a record
+		// erased by mistake once the data was live. The title is derived from the record's own
+		// first line (`rememberTitle`), and the context travels as a `context=` tag
+		// (`rememberTags`), where it stays recoverable without standing in for identity.
 		const originActor = originActorFor(input);
 		const stored = await rememberRecord(config, {
 			track: track.value,
 			content,
 			originActor,
-			title: input.context,
+			title: rememberTitle(content),
+			tags: rememberTags(input.context),
 		});
 		if (!stored.ok) return saveFailure(stored.error);
 		if (input.importance === undefined) return { backend: "memvidkb", stored: 1, ids: [stored.data.id] };
