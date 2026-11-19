@@ -15,7 +15,7 @@ const memoryEditSchema = type({
 	"importance?": type("number").describe("replacement importance for update (0–1)"),
 	"replacement_id?": type("string").describe("replacement memory id for invalidate"),
 	"expected_captured_at?": type("string").describe(
-		"capturedAt of the row as read back, proof the caller saw it; required by update and forget",
+		"the value on the record's `captured:` line, copied from `read knowledge://record/...`; proof the caller saw the row; required by update and forget",
 	),
 });
 

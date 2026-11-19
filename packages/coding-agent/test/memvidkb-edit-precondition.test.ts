@@ -155,6 +155,9 @@ describe("memvidkb edit read-back precondition", () => {
 		expect(result.message.startsWith(KNOWLEDGE_ERROR_PREFIX.unavailable)).toBe(true);
 		expect(result.message).toContain(READ_REF);
 		expect(result.message).toContain("expected_captured_at");
+		// The hint has to name the field the caller can actually see: the knowledge:// read
+		// prints the proof as `captured:`, never as the wire name `capturedAt`.
+		expect(result.message).toContain("captured:");
 		// The row is read to check the proof against; the destructive call is never sent.
 		expect(requests.map(request => `${request.method} ${request.path}`)).toEqual([
 			`GET /memories/${TRACK}/records/${RECORD_ID}`,
@@ -185,6 +188,7 @@ describe("memvidkb edit read-back precondition", () => {
 			expect(result.status, op).toBe("precondition_failed");
 			expect(result.message, op).toContain(CAPTURED_AT);
 			expect(result.message, op).toContain(READ_REF);
+			expect(result.message, op).toContain("captured:");
 			expect(writeRequests(), op).toEqual([]);
 		}
 	});
@@ -208,6 +212,7 @@ describe("memvidkb edit read-back precondition", () => {
 			expect((result.details as MemoryBackendEditResult).status, params.op).toBe("precondition_failed");
 			expect(shown, params.op).toContain(READ_REF);
 			expect(shown, params.op).toContain("expected_captured_at");
+			expect(shown, params.op).toContain("captured:");
 			expect(writeRequests(), params.op).toEqual([]);
 		}
 	});
@@ -290,11 +295,18 @@ describe("memvidkb edit read-back precondition", () => {
 describe("memory_edit honesty for the memvidkb backend", () => {
 	it("exposes the read-back proof as a parameter the model can actually pass", () => {
 		const tool = MemoryEditTool.createIf(makeSession())!;
-		const ir = (tool.parameters as unknown as { ir: { props: { key: string; opt: boolean; val: { k: string } }[] } })
-			.ir;
+		const ir = (
+			tool.parameters as unknown as {
+				ir: { props: { key: string; opt: boolean; val: { k: string; desc?: string } }[] };
+			}
+		).ir;
 		const proof = ir.props.find(prop => prop.key === "expected_captured_at");
 		expect(proof?.opt).toBe(true);
 		expect(proof?.val.k).toBe("string");
+		// The parameter hint is the only place the caller learns where the proof comes from,
+		// and it has to name the label on the read page rather than the service's field name.
+		expect(proof?.val.desc).toContain("captured:");
+		expect(proof?.val.desc).toContain("knowledge://record/");
 	});
 
 	it("promises no fact tier to a caller on the knowledge service, and points at the read", () => {
