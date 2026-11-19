@@ -14,6 +14,9 @@ const memoryEditSchema = type({
 	"content?": type("string").describe("replacement content for update"),
 	"importance?": type("number").describe("replacement importance for update (0–1)"),
 	"replacement_id?": type("string").describe("replacement memory id for invalidate"),
+	"expected_captured_at?": type("string").describe(
+		"capturedAt of the row as read back, proof the caller saw it; required by update and forget",
+	),
 });
 
 export type MemoryEditParams = typeof memoryEditSchema.infer;
@@ -34,6 +37,9 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 	get description(): string {
 		return prompt.render(memoryEditDescription, {
 			toolRefs: sessionMemoryToolRefs(this.session),
+			// The two backends hold different state under the same tool, so the promise the model
+			// reads has to be the one this backend keeps: the knowledge service has no fact tier.
+			memvidkb: cfgMemoryBackend.get(this.session.settings) === "memvidkb",
 		});
 	}
 	readonly parameters = memoryEditSchema;
@@ -61,6 +67,7 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 					id: params.id,
 					content: params.content,
 					replacementId: params.replacement_id,
+					expectedCapturedAt: params.expected_captured_at,
 				},
 			);
 			return {
