@@ -30,6 +30,8 @@ const TOKEN = "kb-provenance-test-bearer";
 const TOKEN_ENV = "MEMVIDKB_PROVENANCE_TEST_TOKEN";
 const CONTEXT = "fulton";
 const TRACK = "dev";
+/** The `capturedAt` the stub's record detail reports — the read-back proof a destructive edit needs. */
+const RECORD_CAPTURED_AT = "2026-11-16T04:00:00Z";
 
 /** A find hit as the service's `SearchResult` reports it — no `track`, no record id. */
 type StubHit = {
@@ -260,7 +262,12 @@ describe("recall renders hit provenance", () => {
 
 		// The proof the id is record-addressable: the same string drives a real edit route.
 		const tool = MemoryEditTool.createIf(makeSession(settings()))!;
-		await tool.execute("edit-from-recall", { op: "update", id, content: "Roll the router before the gateway." });
+		await tool.execute("edit-from-recall", {
+			op: "update",
+			id,
+			content: "Roll the router before the gateway.",
+			expected_captured_at: RECORD_CAPTURED_AT,
+		});
 		const supersede = requests.find(request => request.path.endsWith("/supersede"));
 		expect(supersede?.path).toBe("/memories/dev/records/rec-42/supersede");
 	});

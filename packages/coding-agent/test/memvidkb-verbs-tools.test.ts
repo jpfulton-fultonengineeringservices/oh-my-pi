@@ -341,8 +341,12 @@ describe("memory_edit verbs", () => {
 			`POST /memories/dev/records/${RECORD_ID}/supersede`,
 		]);
 		const body = JSON.parse(requests[1]?.body ?? "{}") as Record<string, unknown>;
-		expect(Object.keys(body).sort()).toEqual(["content", "originActor"]);
+		// `title` is a documented SupersedeRequest field now (the server no longer
+		// fabricates the successor's title from the prior); it carries the derived
+		// first line of the corrected text, and no other key rides the wire.
+		expect(Object.keys(body).sort()).toEqual(["content", "originActor", "title"]);
 		expect(body["content"]).toBe("Roll the router before the gateway.");
+		expect(body["title"]).toBe("Roll the router before the gateway.");
 		expect(text(result)).toContain(RECORD_ID);
 		expect(text(result)).toContain("rec-43");
 	});
@@ -423,10 +427,15 @@ describe("memory tools route to the knowledge service", () => {
 		expect(requests[0]?.path).toBe("/memories/dev/records");
 		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
 		expect(body["content"]).toBe("The gateway must be restarted before the router.");
-		// `context` has no wire counterpart; the backend carries it as the record's display `title`.
-		expect(body["title"]).toBe("deploy");
+		// The caller's `context` never titles the record — distinct records sharing a
+		// context would be indistinguishable — it rides as a `context=` tag; the title is
+		// derived from the record's own first line.
+		expect(body["title"]).toBe("The gateway must be restarted before the router.");
+		expect(body["tags"]).toEqual(["context=deploy"]);
 		expect(body["context"]).toBeUndefined();
-		expect(text(result)).toBe("1 memory stored.");
+		// The id belongs in the text the model reads, not only in `details`: it is the
+		// handle `memory_edit` takes back, and this arm is what proves it is reported.
+		expect(text(result)).toBe(`1 memory stored. id=${RECORD_ID}`);
 		// The tell-tale of a silent fallback: the local backend appends lessons to
 		// learned.md under the agent dir. A routed retain never creates it.
 		expect(findNamed(temp.path(), "learned.md")).toEqual([]);
