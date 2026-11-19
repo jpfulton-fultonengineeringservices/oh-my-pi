@@ -336,8 +336,12 @@ describe("memory_edit verbs", () => {
 		expect(requests[0]?.method).toBe("POST");
 		expect(requests[0]?.path).toBe(`/memories/dev/records/${RECORD_ID}/supersede`);
 		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
-		expect(Object.keys(body).sort()).toEqual(["content", "originActor"]);
+		// `title` is a documented SupersedeRequest field now (the server no longer
+		// fabricates the successor's title from the prior); it carries the derived
+		// first line of the corrected text, and no other key rides the wire.
+		expect(Object.keys(body).sort()).toEqual(["content", "originActor", "title"]);
 		expect(body["content"]).toBe("Roll the router before the gateway.");
+		expect(body["title"]).toBe("Roll the router before the gateway.");
 		expect(text(result)).toContain(RECORD_ID);
 		expect(text(result)).toContain("rec-43");
 	});

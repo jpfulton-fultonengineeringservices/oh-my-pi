@@ -17,6 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { memvidkbBackend } from "../src/memvidkb/backend";
+import { inspectRecord } from "../src/memvidkb/client-records";
 import { REMEMBER_RESPONSE } from "../src/memvidkb/dto";
 import { KB_CAPTURE_SOURCE, saveLessonToKb } from "../src/autolearn/kb-sink";
 import type { MemoryBackendOperationContext } from "../src/memory-backend/types";
@@ -27,6 +28,8 @@ const TOKEN_ENV = "MEMVIDKB_TITLE_TEST_TOKEN";
 const CONTEXT = "deploy order";
 const GATEWAY = "Roll the gateway before the router.";
 const VOLUME = "Back up the Postgres volume before the upgrade.";
+const PRIOR_ID = "prior-1";
+const SUCCESSOR_ID = "succ-77";
 
 type Recorded = { method: string; path: string; body: string };
 
@@ -34,6 +37,10 @@ let temp: TempDir;
 let server: Bun.Server<undefined>;
 let baseUrl = "";
 let requests: Recorded[] = [];
+// What the stub stored as the successor's title, keyed by successor id: the GET
+// detail handler serves it back, so the test asserts the round trip and not just
+// the outgoing body.
+const successorTitles = new Map<string, string | null>();
 
 function context(): MemoryBackendOperationContext {
 	return { agentDir: temp.path(), cwd: temp.path() };
@@ -61,6 +68,7 @@ async function writeConfig(): Promise<void> {
 beforeEach(async () => {
 	temp = TempDir.createSync("@memvidkb-remember-title-");
 	requests = [];
+	successorTitles.clear();
 	process.env[TOKEN_ENV] = TOKEN;
 	server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -83,6 +91,33 @@ beforeEach(async () => {
 					capturedAt: "2026-11-16T04:00:00Z",
 					lastVerifiedAt: null,
 					derivedFrom: null,
+				});
+			}
+			if (recorded.method === "POST" && recorded.path.endsWith("/supersede")) {
+				const sent = JSON.parse(recorded.body) as Record<string, unknown>;
+				successorTitles.set(SUCCESSOR_ID, typeof sent["title"] === "string" ? sent["title"] : null);
+				return Response.json({
+					priorId: PRIOR_ID,
+					newId: SUCCESSOR_ID,
+					priorUri: `mv2://dev/${PRIOR_ID}`,
+					newUri: `mv2://dev/${SUCCESSOR_ID}`,
+				});
+			}
+			if (recorded.method === "GET" && recorded.path === `/memories/dev/records/${SUCCESSOR_ID}`) {
+				// Serves the title the successor was actually stored with: `null` here is
+				// what knowledge-protocol would render as `# <uuid>`.
+				return Response.json({
+					id: SUCCESSOR_ID,
+					track: "dev",
+					uri: `mv2://dev/${SUCCESSOR_ID}`,
+					title: successorTitles.get(SUCCESSOR_ID) ?? null,
+					tags: [],
+					text: GATEWAY,
+					originActor: "memory-edit",
+					capturedAt: "2026-11-18T04:00:00Z",
+					lastVerifiedAt: null,
+					derivedFrom: PRIOR_ID,
+					supersededBy: null,
 				});
 			}
 			return new Response("not found", { status: 404 });
@@ -169,5 +204,49 @@ describe("remember wire contract", () => {
 		// widened shape parses the deployed body rather than refusing it.
 		const result = await memvidkbBackend.save!(context(), { content: GATEWAY });
 		expect(result).toEqual({ backend: "memvidkb", stored: 1, ids: ["rec-42"] });
+	});
+});
+
+describe("memvidkb edit update: successor title from the corrected text", () => {
+	it("sends the derived title on the supersede wire", async () => {
+		const corrected = `${GATEWAY}\nDrain the connections first.`;
+		const result = await memvidkbBackend.edit(context(), { op: "update", id: PRIOR_ID, content: corrected });
+		expect(result.status).toBe("updated");
+		const sent = requests.find(r => r.method === "POST" && r.path.endsWith("/supersede"));
+		expect(sent).toBeDefined();
+		const body = JSON.parse(sent?.body ?? "{}") as Record<string, unknown>;
+		expect(body["content"]).toBe(corrected);
+		// Derived from the corrected text — the same rule the remember path applies —
+		// not fabricated from the prior id and not left off for the server to invent.
+		expect(body["title"]).toBe(GATEWAY);
+		expect(body["title"]).not.toBe(PRIOR_ID);
+	});
+
+	it("caps the supersede title the same way the remember path caps", async () => {
+		const long = "b".repeat(120);
+		await memvidkbBackend.edit(context(), { op: "update", id: PRIOR_ID, content: long });
+		const sent = requests.find(r => r.method === "POST" && r.path.endsWith("/supersede"));
+		const body = JSON.parse(sent?.body ?? "{}") as Record<string, unknown>;
+		const title = String(body["title"]);
+		// One derivation, two call sites: the cap is not re-implemented here, so a
+		// divergence between the two paths would fail this and the remember cap test.
+		expect(title.length).toBe(80);
+		expect(title.endsWith("…")).toBe(true);
+	});
+
+	it("reads the successor back titled, not as a bare id", async () => {
+		await memvidkbBackend.edit(context(), { op: "update", id: PRIOR_ID, content: `${GATEWAY}\nSecond line.` });
+		const detail = await inspectRecord(
+			{ baseUrl, tokenEnvVar: TOKEN_ENV, token: TOKEN },
+			{ track: "dev", recordId: SUCCESSOR_ID },
+		);
+		expect(detail.ok).toBe(true);
+		if (!detail.ok) return;
+		// knowledge-protocol renders `# ${title ?? id}`: a null title on the successor is
+		// the silent-drop regression this thread exists to prevent, so the assertion
+		// reads the stored record back over the wire instead of trusting the send.
+		expect(detail.data.title).toBe(GATEWAY);
+		expect(detail.data.title).not.toBeNull();
+		expect(detail.data.title).not.toBe(SUCCESSOR_ID);
 	});
 });

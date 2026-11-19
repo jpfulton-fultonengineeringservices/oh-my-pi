@@ -752,6 +752,10 @@ export const memvidkbBackend = {
 				recordId: id,
 				content,
 				originActor: MEMORY_EDIT_ORIGIN_ACTOR,
+				// One derivation, two call sites: the successor's title comes from the
+				// corrected text through the same `rememberTitle` the remember path uses,
+				// so a corrected record is never read back titled by its uuid.
+				title: rememberTitle(content),
 			});
 			if (!swapped.ok) return editFailure(swapped.error);
 			return {
