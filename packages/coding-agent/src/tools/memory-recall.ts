@@ -6,6 +6,7 @@ import { formatCurrentTime, formatMemories } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import { memvidkbBackend } from "../memvidkb/backend";
+import type { MemoryBackendSearchItem } from "../memory-backend/types";
 import type { ToolSession } from ".";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
@@ -23,16 +24,39 @@ export type MemoryRecallParams = typeof memoryRecallSchema.infer;
  * fields, and a KB hit's identity is its record id plus the `mv2://` uri the service
  * addresses it by, which `memory_edit` needs to address the row again.
  *
+ * Each row is therefore addressable on the page, three ways: `track=` and `context=` name
+ * the scope the row lives in, and `read:` carries the
+ * `knowledge://record/<context>/<track>/<record-id>` pointer that reads the whole stored
+ * text back. `memory_edit` and `memory_list` take record ids only, so a hit whose uri
+ * addresses no record says so on its own line instead of leaving the caller to hand a
+ * frame id to a route that cannot resolve it. No `memory://` pointer is ever emitted:
+ * that scheme belongs to the retired local backends and throws on this backend.
+ *
  * @param items - Hits from the backend, highest score first.
- * @returns One block per hit: id, source, score, then the text.
+ * @returns One block per hit: id, track, context, source, score; then the read pointer;
+ * then the text.
  */
-function formatKnowledgeHits(items: { id?: string; source?: string; content: string; score?: number }[]): string {
+type KnowledgeHit = Pick<
+	MemoryBackendSearchItem,
+	"id" | "source" | "content" | "score" | "track" | "context" | "pointer" | "truncated" | "snippetLimit"
+>;
+
+function formatKnowledgeHits(items: KnowledgeHit[]): string {
 	return items
 		.map((item, index) => {
 			const head = [`#${String(index + 1)}`, `id=${item.id ?? "unknown"}`];
+			if (item.track) head.push(`track=${item.track}`);
+			if (item.context) head.push(`context=${item.context}`);
 			if (item.source) head.push(`source=${item.source}`);
 			if (item.score !== undefined) head.push(`score=${item.score.toFixed(4)}`);
-			return `${head.join(" ")}\n${item.content}`;
+			// The snippet is the service's own `bounded()` clip, so a hit landing on the
+			// ceiling is text that continues somewhere the caller cannot see. Naming the
+			// ceiling is what turns `read:` from a decoration into an instruction.
+			if (item.truncated) head.push(`clippedAt=${String(item.snippetLimit ?? item.content.length)}`);
+			const read = item.pointer
+				? `read: ${item.pointer}`
+				: "read: none — this hit addresses no record, so `id` is a frame id memory_edit cannot resolve";
+			return [head.join(" "), read, item.content].join("\n");
 		})
 		.join("\n\n");
 }
@@ -92,7 +116,15 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 							text: `Found ${String(result.count)} relevant ${result.count === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatKnowledgeHits(result.items)}`,
 						},
 					],
-					details: {},
+					// The rendered text is for the model; this is the same provenance in
+					// machine-readable form, so a caller reads `details.items[n].pointer`
+					// instead of parsing the block back apart.
+					details: {
+						backend: result.backend,
+						query: result.query,
+						count: result.count,
+						items: result.items,
+					},
 				};
 			}
 

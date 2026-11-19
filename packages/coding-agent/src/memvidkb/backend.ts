@@ -82,6 +82,46 @@ function hitTimestamp(seconds: number): string | undefined {
 }
 
 /**
+ * Longest `textSnippet` the find route returns.
+ *
+ * The service clips with `bounded()` — `text.trim().chars().take(limit)`
+ * (`src/search/snippet.rs:178-180`) — against its own `SNIPPET_CHARS`
+ * (`src/search/snippet.rs:37`), and the cut carries no ellipsis. `SearchResult`
+ * (`src/search.rs:124-133`) reports neither a length nor a track, so a snippet that
+ * lands on this count is the only evidence a caller gets that the stored text continues
+ * past what it can see, and the track has to be derived from the hit's own uri.
+ *
+ * The ceiling holds only while `find` runs the service's default mode: the temporal branch
+ * clips at `snippet::LISTING_SNIPPET_CHARS` (120, `src/search/timeline.rs:40-41`), and
+ * `FIND_MODES` (`./dto`) already admits `"temporal"`. A `mode` option must therefore carry
+ * its own ceiling, or `truncated` would silently under-report.
+ */
+const SNIPPET_CHARS = 200;
+
+/**
+ * The record id a find hit addresses, when its uri names a record at all.
+ *
+ * `mv2://{track}/records/{id}` is a record and `…/records/{id}/chunk-N` one of its
+ * chunks: both address the same record, which is the handle `memory_edit` and
+ * `memory_list` take. A uri under any other path is an ingested document or one of its
+ * chunks, which those routes cannot resolve, so this stays `undefined` rather than
+ * handing back an id that would fail on the next call. Same derivation the config
+ * repo's renderer uses (`extensions/lib/knowledge/render.ts:136-144`).
+ *
+ * @param track - Track the hit came from; the uri's authority is that name.
+ * @param uri - The hit's `uri`, verbatim from the service.
+ * @returns The record id, or `undefined` when the hit addresses no record.
+ */
+function recordIdFromUri(track: string, uri: string): string | undefined {
+	const prefix = `mv2://${track}/records/`;
+	if (!uri.startsWith(prefix)) return undefined;
+	const rest = uri.slice(prefix.length);
+	const chunkAt = rest.indexOf("/chunk-");
+	const id = chunkAt >= 0 ? rest.slice(0, chunkAt) : rest;
+	return id.length > 0 ? id : undefined;
+}
+
+/**
  * Who produced a record, as the service records it.
  *
  * The route requires a non-empty `originActor` and documents that it is never derived from
@@ -604,15 +644,32 @@ export const memvidkbBackend = {
 		}
 		if (!found.ok) return searchFailure(query, found.error);
 
-		const items: MemoryBackendSearchItem[] = found.data.results.map(hit => ({
-			// `frameId` is the hit's identity and `uri` the handle the service itself uses,
-			// from which the parent `documentId` derives; they stay in that order.
-			id: hit.frameId,
-			content: hit.textSnippet,
-			source: hit.uri,
-			timestamp: hitTimestamp(hit.timestamp),
-			score: hit.score,
-		}));
+		const items: MemoryBackendSearchItem[] = found.data.results.map(hit => {
+			// The record id when the uri names one, because that is the handle the write
+			// verbs address — a `frameId` cannot be passed back to `memory_edit`. The frame
+			// id stays the fallback for hits that address no record, and `pointer` is what
+			// tells a caller which of the two it is holding.
+			const recordId = recordIdFromUri(track.value, hit.uri);
+			// Code points, matching the service's `chars().take(...)`, so the ceiling is
+			// measured the same way on both sides of the call.
+			const snippetChars = [...hit.textSnippet].length;
+			return {
+				id: recordId ?? hit.frameId,
+				content: hit.textSnippet,
+				source: hit.uri,
+				timestamp: hitTimestamp(hit.timestamp),
+				score: hit.score,
+				// Provenance the hit DTO does not carry and a caller cannot recover from a
+				// clipped snippet alone: which track and context the row lives in, and the
+				// pointer that reads the whole text back.
+				track: track.value,
+				context: config.context,
+				pointer:
+					recordId === undefined ? undefined : `knowledge://record/${config.context}/${track.value}/${recordId}`,
+				truncated: snippetChars >= SNIPPET_CHARS,
+				snippetLimit: SNIPPET_CHARS,
+			};
+		});
 		return { backend: "memvidkb", query, count: items.length, items };
 	},
 
