@@ -228,7 +228,10 @@ function recordReadRef(config: MemvidkbBackendConfig, track: string, recordId: s
  * @param track - The default track the edit is addressed to.
  * @param requestedId - The id the caller asked to edit.
  * @param row - The record the read returned for that id.
- * @param proof - The caller's read-back token: the `capturedAt` it read, if any.
+ * @param proof - The caller's read-back token: the row's `capturedAt`, if any. The refusal text
+ * names it `captured:` because that is the label the knowledge:// record read prints it under
+ * (`internal-urls/knowledge-protocol.ts:22`); a field name the caller never saw is a hint it
+ * cannot follow.
  * @param op - Which destructive op is being refused, so the message names the real call.
  * @returns A refusal carrying the read the caller must perform, or `null` to proceed.
  */
@@ -261,7 +264,7 @@ function readBackRefusal(
 			message:
 				`${KNOWLEDGE_ERROR_PREFIX.unavailable}${op} refused the request before sending it: record ${requestedId} ` +
 				`was never read back, so this edit would destroy state no caller has seen. Nothing was sent. ` +
-				`${readRef} first, then resend with that row's capturedAt as expected_captured_at.`,
+				`${readRef} first, then resend the value on its \`captured:\` line as expected_captured_at.`,
 		};
 	}
 	if (supplied !== row.capturedAt) {
@@ -270,8 +273,9 @@ function readBackRefusal(
 			status: "precondition_failed",
 			message:
 				`${KNOWLEDGE_ERROR_PREFIX.unavailable}${op} refused the request before sending it: expected_captured_at ` +
-				`"${supplied}" is not record ${requestedId}'s capturedAt, which is "${row.capturedAt}" — the row is not ` +
-				`the one read, or it has changed since. Nothing was sent. ${readRef} again and resend with the value it reports.`,
+				`"${supplied}" is not the value on record ${requestedId}'s \`captured:\` line, which is ` +
+				`"${row.capturedAt}" — the row is not the one read, or it has changed since. Nothing was sent. ` +
+				`${readRef} again and resend what that line reports.`,
 		};
 	}
 	return null;
