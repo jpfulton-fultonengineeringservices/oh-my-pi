@@ -30,6 +30,8 @@ const GATEWAY = "Roll the gateway before the router.";
 const VOLUME = "Back up the Postgres volume before the upgrade.";
 const PRIOR_ID = "prior-1";
 const SUCCESSOR_ID = "succ-77";
+/** The `capturedAt` the stub's record detail reports — the read-back proof a destructive edit needs. */
+const PRIOR_CAPTURED_AT = "2026-11-16T04:00:00Z";
 
 type Recorded = { method: string; path: string; body: string };
 
@@ -101,6 +103,25 @@ beforeEach(async () => {
 					newId: SUCCESSOR_ID,
 					priorUri: `mv2://dev/${PRIOR_ID}`,
 					newUri: `mv2://dev/${SUCCESSOR_ID}`,
+				});
+			}
+			if (recorded.method === "GET" && recorded.path === `/memories/dev/records/${PRIOR_ID}`) {
+				// The row a destructive edit has to be seen before it may be overwritten:
+				// the edit path refuses to send a supersede unless the caller proves it has
+				// read this `capturedAt`, so the stub serves the prior as well as the
+				// successor — without it every edit here would be refused before the wire.
+				return Response.json({
+					id: PRIOR_ID,
+					track: "dev",
+					uri: `mv2://dev/${PRIOR_ID}`,
+					title: VOLUME,
+					tags: [],
+					text: VOLUME,
+					originActor: "fulton",
+					capturedAt: PRIOR_CAPTURED_AT,
+					lastVerifiedAt: null,
+					derivedFrom: null,
+					supersededBy: null,
 				});
 			}
 			if (recorded.method === "GET" && recorded.path === `/memories/dev/records/${SUCCESSOR_ID}`) {
@@ -210,7 +231,12 @@ describe("remember wire contract", () => {
 describe("memvidkb edit update: successor title from the corrected text", () => {
 	it("sends the derived title on the supersede wire", async () => {
 		const corrected = `${GATEWAY}\nDrain the connections first.`;
-		const result = await memvidkbBackend.edit(context(), { op: "update", id: PRIOR_ID, content: corrected });
+		const result = await memvidkbBackend.edit(context(), {
+			op: "update",
+			id: PRIOR_ID,
+			content: corrected,
+			expectedCapturedAt: PRIOR_CAPTURED_AT,
+		});
 		expect(result.status).toBe("updated");
 		const sent = requests.find(r => r.method === "POST" && r.path.endsWith("/supersede"));
 		expect(sent).toBeDefined();
@@ -224,7 +250,12 @@ describe("memvidkb edit update: successor title from the corrected text", () => 
 
 	it("caps the supersede title the same way the remember path caps", async () => {
 		const long = "b".repeat(120);
-		await memvidkbBackend.edit(context(), { op: "update", id: PRIOR_ID, content: long });
+		await memvidkbBackend.edit(context(), {
+			op: "update",
+			id: PRIOR_ID,
+			content: long,
+			expectedCapturedAt: PRIOR_CAPTURED_AT,
+		});
 		const sent = requests.find(r => r.method === "POST" && r.path.endsWith("/supersede"));
 		const body = JSON.parse(sent?.body ?? "{}") as Record<string, unknown>;
 		const title = String(body["title"]);
@@ -235,7 +266,12 @@ describe("memvidkb edit update: successor title from the corrected text", () => 
 	});
 
 	it("reads the successor back titled, not as a bare id", async () => {
-		await memvidkbBackend.edit(context(), { op: "update", id: PRIOR_ID, content: `${GATEWAY}\nSecond line.` });
+		await memvidkbBackend.edit(context(), {
+			op: "update",
+			id: PRIOR_ID,
+			content: `${GATEWAY}\nSecond line.`,
+			expectedCapturedAt: PRIOR_CAPTURED_AT,
+		});
 		const detail = await inspectRecord(
 			{ baseUrl, tokenEnvVar: TOKEN_ENV, token: TOKEN },
 			{ track: "dev", recordId: SUCCESSOR_ID },
