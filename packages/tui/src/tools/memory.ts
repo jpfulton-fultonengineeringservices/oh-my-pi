@@ -39,15 +39,28 @@ interface QueryRenderArgs {
 	query?: string;
 }
 
-function retainContents(args: RetainRenderArgs | undefined): string[] {
+/** One rendered item: the text to show, and the slot in `items` it came from. */
+interface RetainContent {
+	content: string;
+	index: number;
+}
+
+/**
+ * The items worth rendering, each tagged with the index of the `items` entry it came
+ * from. The blank ones are skipped — nothing is worth showing for them — but the
+ * numbering survives, because the backend wrote them and holds an id for them: pairing
+ * `details.ids` by rendered position instead of source index would slide every later
+ * id onto the content of another item, and the id is the handle `memory_edit` takes.
+ */
+function retainContents(args: RetainRenderArgs | undefined): RetainContent[] {
 	const items = args?.items;
 	if (!Array.isArray(items)) return [];
 
-	const contents: string[] = [];
-	for (const item of items) {
+	const contents: RetainContent[] = [];
+	for (const [index, item] of items.entries()) {
 		if (!item || typeof item !== "object" || !("content" in item) || typeof item.content !== "string") continue;
 		const content = replaceTabs(item.content.trim());
-		if (content.length > 0) contents.push(content);
+		if (content.length > 0) contents.push({ content, index });
 	}
 	return contents;
 }
@@ -67,7 +80,7 @@ function queryHeader(
 }
 
 function retainComponent(
-	contents: string[],
+	contents: RetainContent[],
 	header: string,
 	getExpanded: () => boolean,
 	theme: Theme,
@@ -79,13 +92,15 @@ function retainComponent(
 		const shown = contents.slice(0, limit);
 		const bullet = theme.format.bullet;
 		const contentWidth = Math.max(8, width - 2 - Bun.stringWidth(bullet) - 1);
-		for (const [index, content] of shown.entries()) {
+		for (const shownItem of shown) {
 			// The id is the handle `memory_edit` takes back, so it keeps a place on the
-			// item's own line: the content gives up width for it instead of pushing it off.
-			const id = ids?.[index];
+			// item's own line — the item's own, by its `items` index, not the line it
+			// happens to land on. The content gives up width for it rather than pushing
+			// it off the end.
+			const id = ids?.[shownItem.index];
 			const suffix = id ? ` ${theme.fg("dim", `id=${id}`)}` : "";
 			const value = truncateToWidth(
-				content,
+				shownItem.content,
 				Math.max(8, contentWidth - (id ? Bun.stringWidth(id) + 5 : 0)),
 				Ellipsis.Unicode,
 			);
@@ -100,7 +115,7 @@ function retainComponent(
 }
 
 /** Retained memories as a list, clamped to the collapsed item budget. */
-function describeRetain(contents: string[], summary?: string, ids?: readonly string[]): NativeToolView {
+function describeRetain(contents: RetainContent[], summary?: string, ids?: readonly string[]): NativeToolView {
 	return {
 		head: toolHead("Retain", summary),
 		inline: true,
@@ -108,10 +123,10 @@ function describeRetain(contents: string[], summary?: string, ids?: readonly str
 			contents.length > 0
 				? [
 						list(
-							contents.map((content, i) =>
-								item(String(i), {
+							contents.map(({ content, index }) =>
+								item(String(index), {
 									label: plainText(content),
-									detail: ids?.[i] ? plainText(`id=${ids[i]}`) : undefined,
+									detail: ids?.[index] ? plainText(`id=${ids[index]}`) : undefined,
 								}),
 							),
 						),
@@ -174,7 +189,11 @@ export const retainToolRenderer = {
 	},
 	describeCall(args: RetainRenderArgs): NativeToolView | undefined {
 		const contents = retainContents(args);
-		return retainCallMemo.get(args, [contents.join("\0")], () => describeRetain(contents));
+		return retainCallMemo.get(
+			args,
+			contents.map(({ content, index }) => `${String(index)}:${content}`),
+			() => describeRetain(contents),
+		);
 	},
 	describeResult(
 		result: { content: Array<{ type: string; text?: string }>; details?: MemoryRetainDetails; isError?: boolean },

@@ -52,18 +52,19 @@ export type MemoryRetainParams = typeof memoryRetainSchemaWithScope.infer;
 function storedResult(storedIds: string[], count: number): AgentToolResult<MemoryRetainDetails> {
 	const noun = count === 1 ? "memory" : "memories";
 	const head = `${String(count)} ${noun} stored.`;
-	// An empty id is not a handle: it is dropped rather than reported as `(id )`,
-	// while the surviving ones keep the item number of the slot they came from.
-	const ids = storedIds.filter(id => id.length > 0);
-	const text =
-		count === 1 && ids.length === 1
-			? `${head} id=${ids[0]}`
-			: [head, ...storedIds.map((id, index) => (id.length > 0 ? `item ${String(index + 1)} (id ${id})` : ""))]
-					.filter(line => line.length > 0)
-					.join("\n");
+	// `details.ids` stays positional: element i is the handle of item i, which is how
+	// the renderer pairs a handle with the content it names. An id a backend left blank
+	// is never printed — it is not a handle — but it keeps its slot rather than being
+	// filtered out, which would slide every later id onto the wrong item.
+	const lone = count === 1 && storedIds.length === 1 ? (storedIds[0] ?? "") : "";
+	const text = lone
+		? `${head} id=${lone}`
+		: [head, ...storedIds.map((id, index) => (id.length > 0 ? `item ${String(index + 1)} (id ${id})` : ""))]
+				.filter(line => line.length > 0)
+				.join("\n");
 	return {
 		content: [{ type: "text", text }],
-		details: ids.length > 0 ? { count, ids } : { count },
+		details: storedIds.length > 0 ? { count, ids: storedIds } : { count },
 	};
 }
 

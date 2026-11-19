@@ -16,7 +16,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { retainToolRenderer } from "@oh-my-pi/pi-tui/tools/memory";
+import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
+import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
 const TOKEN = "kb-retain-ids-test-bearer";
@@ -96,6 +98,15 @@ function textOf(result: ResultText): string {
 	return first?.text ?? "";
 }
 
+/** A retain tool wired to a mnemopi state that hands back the given ids in order. */
+function mnemopiTool(ids: readonly string[]): { tool: MemoryRetainTool; state: { written: string[] } } {
+	const state = mnemopiState(ids);
+	const settings = Settings.isolated({ "memory.backend": "mnemopi" });
+	const instance = MemoryRetainTool.createIf(makeSession(settings, state));
+	if (!instance) throw new Error("mnemopi backend did not mount the retain tool");
+	return { tool: instance, state };
+}
+
 beforeEach(async () => {
 	resetSettingsForTest();
 	temp = TempDir.createSync("@memvidkb-retain-ids-test-");
@@ -166,16 +177,8 @@ describe("retain result carries the stored ids (memvidkb)", () => {
 });
 
 describe("retain result carries the stored ids (mnemopi)", () => {
-	function tool(ids: readonly string[]): { tool: MemoryRetainTool; state: { written: string[] } } {
-		const state = mnemopiState(ids);
-		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
-		const instance = MemoryRetainTool.createIf(makeSession(settings, state));
-		if (!instance) throw new Error("mnemopi backend did not mount the retain tool");
-		return { tool: instance, state };
-	}
-
 	it("names the id the backend returned for a single item", async () => {
-		const { tool: retain, state } = tool(["mem-7"]);
+		const { tool: retain, state } = mnemopiTool(["mem-7"]);
 		const result = await retain.execute("call-retain-mnemopi-single", {
 			items: [{ content: "The user prefers tabs over spaces." }],
 		});
@@ -186,14 +189,57 @@ describe("retain result carries the stored ids (mnemopi)", () => {
 	});
 
 	it("pairs each returned id with the item that produced it", async () => {
-		const { tool: retain } = tool(["mem-8", "mem-9"]);
+		const { tool: retain } = mnemopiTool(["mem-8", "mem-9", "mem-10"]);
 		const result = await retain.execute("call-retain-mnemopi-batch", {
 			items: [{ content: "fact one" }, { content: "fact two" }, { content: "fact three" }],
 		});
 
-		// Only two ids came back for three items: the text keeps the caller's item
-		// numbering, so the missing third handle stays visibly missing.
-		expect(textOf(result)).toBe(["3 memories stored.", "item 1 (id mem-8)", "item 2 (id mem-9)"].join("\n"));
-		expect(result.details).toEqual({ count: 3, ids: ["mem-8", "mem-9"] });
+		expect(textOf(result)).toBe(
+			["3 memories stored.", "item 1 (id mem-8)", "item 2 (id mem-9)", "item 3 (id mem-10)"].join("\n"),
+		);
+		expect(result.details).toEqual({ count: 3, ids: ["mem-8", "mem-9", "mem-10"] });
+	});
+});
+
+/**
+ * The renderer pairs an id with the content it names by the item's own index. A blank
+ * item is stored and holds an id but renders nothing, so pairing by rendered position
+ * would print item 3's handle beside item 2 — the same wrong-handle harm D2 set out to
+ * remove, moved from the model's text into the transcript. `memvidkb` refuses blank
+ * content before it is ever written, so this reaches the store through the mnemopi
+ * path, whose `rememberScoped` accepts what it is handed.
+ */
+describe("retain renderer pairs each id with the item it names", () => {
+	it("keeps a blank item from sliding a later id onto the wrong content", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("the dark theme is unavailable");
+		const { tool: retain } = mnemopiTool(["mem-a", "mem-b", "mem-c"]);
+		const args = {
+			items: [{ content: "first durable fact" }, { content: "   " }, { content: "third durable fact" }],
+		};
+
+		const result = await retain.execute("call-retain-mnemopi-blank", args);
+		expect(result.details).toEqual({ count: 3, ids: ["mem-a", "mem-b", "mem-c"] });
+
+		const component = retainToolRenderer.renderResult(
+			result as never,
+			{ expanded: false, isPartial: false } as never,
+			theme as never,
+			args as never,
+		);
+		const bullets = sanitizeText(component.render(200).join("\n"))
+			.split("\n")
+			.filter(line => line.includes(theme.format.bullet));
+		expect(bullets).toHaveLength(2);
+		expect(bullets[0]).toContain("first durable fact");
+		expect(bullets[0]).toContain("id=mem-a");
+		expect(bullets[1]).toContain("third durable fact");
+		expect(bullets[1]).toContain("id=mem-c");
+		expect(bullets[1]).not.toContain("id=mem-b");
+
+		const view = retainToolRenderer.describeResult(result as never, {} as never, args as never) as unknown as {
+			body: Array<{ c?: Array<{ p?: { detail?: string } }> }>;
+		};
+		expect((view.body[0]?.c ?? []).map(node => node.p?.detail)).toEqual(["id=mem-a", "id=mem-c"]);
 	});
 });
