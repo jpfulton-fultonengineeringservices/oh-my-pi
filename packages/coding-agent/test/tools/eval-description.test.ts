@@ -367,7 +367,7 @@ describe("eval tool description await markers", () => {
 			it(`marks exactly the Python helpers that return awaitables with await (${mode})`, async () => {
 				const documented = documentedAwaits(getEvalToolDescription(options), "py");
 				const code = [
-					"import inspect, json, os",
+					"import contextlib, inspect, io, json, os",
 					`dir = ${JSON.stringify(tempDir.path())}`,
 					"probes = {",
 					'    "print": lambda: print(end=""),',
@@ -395,7 +395,10 @@ describe("eval tool description await markers", () => {
 					'saved_artifacts_dir = os.environ.get("PI_ARTIFACTS_DIR")',
 					'os.environ["PI_ARTIFACTS_DIR"] = dir',
 					"try:",
-					`    res = {name: probe(name) for name in ${JSON.stringify([...documented.keys()])}}`,
+					// log() prints into the cell stream; keep probe chatter out of it so the
+					// assertion below still pins the whole stdout to the JSON payload.
+					"    with contextlib.redirect_stdout(io.StringIO()):",
+					`        res = {name: probe(name) for name in ${JSON.stringify([...documented.keys()])}}`,
 					"finally:",
 					"    if saved_artifacts_dir is None:",
 					'        os.environ.pop("PI_ARTIFACTS_DIR", None)',
