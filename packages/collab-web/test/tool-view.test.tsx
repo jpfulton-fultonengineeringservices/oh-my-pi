@@ -308,3 +308,68 @@ describe("ToolView ask renderer", () => {
 		expect(html).toContain("at least one named control");
 	});
 });
+
+/**
+ * `retain` answers with a count line plus one id line per stored item. The dashboard
+ * keeps those two jobs apart: the ok-chip is the count line alone, and each row carries
+ * the handle of the content it shows. Pairing the handles by rendered position instead
+ * of by the item's slot would put item 3's id on item 2 whenever a blank item is stored
+ * in between — a wrong handle is worse than no handle, since `memory_edit` takes it back.
+ */
+describe("ToolView retain renderer", () => {
+	it("keeps the per-item id lines out of the status chip and pairs ids with their rows", () => {
+		const html = renderToStaticMarkup(
+			<ToolView
+				name="retain"
+				defaultOpen
+				args={{
+					items: [
+						{ content: "Roll the gateway before the router.", context: "deploy order" },
+						{ content: "   " },
+						{ content: "The health probe is the first line of the deploy log." },
+					],
+				}}
+				result={{
+					content: [
+						{
+							type: "text",
+							text: ["3 memories stored.", "item 1 (id rec-1)", "item 2 (id rec-2)", "item 3 (id rec-3)"].join(
+								"\n",
+							),
+						},
+					],
+					details: { count: 3, ids: ["rec-1", "rec-2", "rec-3"] },
+				}}
+			/>,
+		);
+
+		// The chip is the tool's own count sentence and nothing below it.
+		expect(html).toContain(">3 memories stored<");
+		expect(html).not.toContain("item 1 (id rec-1)");
+		expect(html).not.toContain("3 memories stored.\nitem 1");
+		// The blank middle item renders no row but keeps its slot, so item 3 is still
+		// labelled with its own id rather than the one belonging to the blank item.
+		expect(html).toContain("Roll the gateway before the router.");
+		expect(html).toContain("id=rec-1");
+		expect(html).toContain("id=rec-3");
+		expect(html).not.toContain("id=rec-2");
+	});
+
+	it("puts a lone item's id on its row rather than doubling it in the chip", () => {
+		const html = renderToStaticMarkup(
+			<ToolView
+				name="retain"
+				defaultOpen
+				args={{ items: [{ content: "The user prefers Bun over Node for new scripts." }] }}
+				result={{
+					content: [{ type: "text", text: "1 memory stored. id=rec-8f3a1c" }],
+					details: { count: 1, ids: ["rec-8f3a1c"] },
+				}}
+			/>,
+		);
+
+		expect(html).toContain(">1 memory stored<");
+		expect(html).toContain("The user prefers Bun over Node for new scripts.");
+		expect(html).toContain("id=rec-8f3a1c");
+	});
+});

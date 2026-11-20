@@ -39,15 +39,28 @@ interface QueryRenderArgs {
 	query?: string;
 }
 
-function retainContents(args: RetainRenderArgs | undefined): string[] {
+/** One rendered item: the text to show, and the slot in `items` it came from. */
+interface RetainContent {
+	content: string;
+	index: number;
+}
+
+/**
+ * The items worth rendering, each tagged with the index of the `items` entry it came
+ * from. The blank ones are skipped — nothing is worth showing for them — but the
+ * numbering survives, because the backend wrote them and holds an id for them: pairing
+ * `details.ids` by rendered position instead of source index would slide every later
+ * id onto the content of another item, and the id is the handle `memory_edit` takes.
+ */
+function retainContents(args: RetainRenderArgs | undefined): RetainContent[] {
 	const items = args?.items;
 	if (!Array.isArray(items)) return [];
 
-	const contents: string[] = [];
-	for (const item of items) {
+	const contents: RetainContent[] = [];
+	for (const [index, item] of items.entries()) {
 		if (!item || typeof item !== "object" || !("content" in item) || typeof item.content !== "string") continue;
 		const content = replaceTabs(item.content.trim());
-		if (content.length > 0) contents.push(content);
+		if (content.length > 0) contents.push({ content, index });
 	}
 	return contents;
 }
@@ -66,16 +79,32 @@ function queryHeader(
 	return renderStatusLine({ icon, iconOverride, title, description, meta }, theme);
 }
 
-function retainComponent(contents: string[], header: string, getExpanded: () => boolean, theme: Theme): Component {
+function retainComponent(
+	contents: RetainContent[],
+	header: string,
+	getExpanded: () => boolean,
+	theme: Theme,
+	ids?: readonly string[],
+): Component {
 	return createCachedComponent(getExpanded, (width, expanded) => {
 		const lines = [header];
 		const limit = expanded ? contents.length : PREVIEW_LIMITS.COLLAPSED_ITEMS;
 		const shown = contents.slice(0, limit);
 		const bullet = theme.format.bullet;
 		const contentWidth = Math.max(8, width - 2 - Bun.stringWidth(bullet) - 1);
-		for (const content of shown) {
-			const value = truncateToWidth(content, contentWidth, Ellipsis.Unicode);
-			lines.push(`  ${theme.fg("muted", bullet)} ${theme.fg("toolOutput", value)}`);
+		for (const shownItem of shown) {
+			// The id is the handle `memory_edit` takes back, so it keeps a place on the
+			// item's own line — the item's own, by its `items` index, not the line it
+			// happens to land on. The content gives up width for it rather than pushing
+			// it off the end.
+			const id = ids?.[shownItem.index];
+			const suffix = id ? ` ${theme.fg("dim", `id=${id}`)}` : "";
+			const value = truncateToWidth(
+				shownItem.content,
+				Math.max(8, contentWidth - (id ? Bun.stringWidth(id) + 5 : 0)),
+				Ellipsis.Unicode,
+			);
+			lines.push(`  ${theme.fg("muted", bullet)} ${theme.fg("toolOutput", value)}${suffix}`);
 		}
 		const remaining = contents.length - shown.length;
 		if (remaining > 0) {
@@ -86,13 +115,22 @@ function retainComponent(contents: string[], header: string, getExpanded: () => 
 }
 
 /** Retained memories as a list, clamped to the collapsed item budget. */
-function describeRetain(contents: string[], summary?: string): NativeToolView {
+function describeRetain(contents: RetainContent[], summary?: string, ids?: readonly string[]): NativeToolView {
 	return {
 		head: toolHead("Retain", summary),
 		inline: true,
 		body:
 			contents.length > 0
-				? [list(contents.map((content, i) => item(String(i), { label: plainText(content) })))]
+				? [
+						list(
+							contents.map(({ content, index }) =>
+								item(String(index), {
+									label: plainText(content),
+									detail: ids?.[index] ? plainText(`id=${ids[index]}`) : undefined,
+								}),
+							),
+						),
+					]
 				: [],
 		preview: { lines: PREVIEW_LIMITS.COLLAPSED_ITEMS },
 	};
@@ -102,6 +140,20 @@ const retainCallMemo = new OwnerMemo<NativeToolView | undefined>();
 const retainResultMemo = new OwnerMemo<NativeToolView | undefined>();
 const recallResultMemo = new OwnerMemo<NativeToolView | undefined>();
 const reflectResultMemo = new OwnerMemo<NativeToolView | undefined>();
+
+/**
+ * The tool's own status line: the count sentence of its result, minus the trailing
+ * period and minus a lone item's id. The id belongs on the item's own line below,
+ * where `memory_edit`'s handle reads next to the content it names; the header would
+ * only say it twice.
+ */
+function retainSummary(output: string): string {
+	return output
+		.split("\n", 1)[0]
+		.trim()
+		.replace(/\s+id=\S+$/, "")
+		.replace(/\.$/, "");
+}
 
 /** Render retained memory items and their storage summary. */
 export const retainToolRenderer = {
@@ -113,7 +165,7 @@ export const retainToolRenderer = {
 		return retainComponent(contents, header, () => options.expanded, theme);
 	},
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: { count?: number }; isError?: boolean },
+		result: { content: Array<{ type: string; text?: string }>; details?: MemoryRetainDetails; isError?: boolean },
 		options: RenderResultOptions,
 		theme: Theme,
 		args?: RetainRenderArgs,
@@ -122,9 +174,9 @@ export const retainToolRenderer = {
 			return new Text(formatErrorMessage(resultText(result).trim() || "Retain failed", theme), 0, 0);
 		}
 		const contents = retainContents(args);
-		// `summary` is the tool's own "N memories stored/queued." line; drop the
-		// trailing period so it reads cleanly as a status meta segment.
-		const summary = resultText(result).trim().replace(/\.$/, "");
+		// `summary` is the tool's own "N memories stored/queued." line, and only that
+		// first line: the per-item ids the tool now reports ride on the lines below it.
+		const summary = retainSummary(resultText(result));
 		const header = renderStatusLine(
 			{
 				iconOverride: theme.styledSymbol("tool.memory", "accent"),
@@ -133,11 +185,15 @@ export const retainToolRenderer = {
 			},
 			theme,
 		);
-		return retainComponent(contents, header, () => options.expanded, theme);
+		return retainComponent(contents, header, () => options.expanded, theme, result.details?.ids);
 	},
 	describeCall(args: RetainRenderArgs): NativeToolView | undefined {
 		const contents = retainContents(args);
-		return retainCallMemo.get(args, [contents.join("\0")], () => describeRetain(contents));
+		return retainCallMemo.get(
+			args,
+			contents.map(({ content, index }) => `${String(index)}:${content}`),
+			() => describeRetain(contents),
+		);
 	},
 	describeResult(
 		result: { content: Array<{ type: string; text?: string }>; details?: MemoryRetainDetails; isError?: boolean },
@@ -147,7 +203,7 @@ export const retainToolRenderer = {
 		return retainResultMemo.get(result, [], () => {
 			if (result.isError)
 				return { ...errorView("Retain", resultText(result).trim() || "Retain failed"), inline: true };
-			return describeRetain(retainContents(args), resultText(result).trim().replace(/\.$/, ""));
+			return describeRetain(retainContents(args), retainSummary(resultText(result)), result.details?.ids);
 		});
 	},
 } satisfies ToolRenderer<RetainRenderArgs, MemoryRetainDetails>;
@@ -296,7 +352,13 @@ export const reflectToolRenderer = {
 	},
 } satisfies ToolRenderer<QueryRenderArgs, unknown>;
 
-/** Number of memories accepted by retain. */
+/** Memories accepted by retain, and the ids the backend assigned them. */
 export interface MemoryRetainDetails {
 	count: number;
+	/**
+	 * The record ids in item order, so a rendered item carries the very handle
+	 * `memory_edit` takes back. Absent when the backend answers a write without
+	 * ids (the queued hindsight path, and any older recorded result).
+	 */
+	ids?: string[];
 }

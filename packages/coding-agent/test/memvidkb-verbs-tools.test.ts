@@ -421,7 +421,9 @@ describe("memory tools route to the knowledge service", () => {
 		// `context` has no wire counterpart; the backend carries it as the record's display `title`.
 		expect(body["title"]).toBe("deploy");
 		expect(body["context"]).toBeUndefined();
-		expect(text(result)).toBe("1 memory stored.");
+		// The id belongs in the text the model reads, not only in `details`: it is the
+		// handle `memory_edit` takes back, and this arm is what proves it is reported.
+		expect(text(result)).toBe(`1 memory stored. id=${RECORD_ID}`);
 		// The tell-tale of a silent fallback: the local backend appends lessons to
 		// learned.md under the agent dir. A routed retain never creates it.
 		expect(findNamed(temp.path(), "learned.md")).toEqual([]);
