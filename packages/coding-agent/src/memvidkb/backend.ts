@@ -31,7 +31,7 @@ import { findTrack, health, listRecords, rememberRecord, type MemvidkbOutcome } 
 import { eraseDocument, inspectRecord, supersedeRecord } from "./client-records";
 import { loadMemvidkbBackendConfig, selectDefaultTrack, type MemvidkbBackendConfig } from "./config";
 import { KNOWLEDGE_ERROR_PREFIX } from "./errors";
-import type { FindResponse, FindResultItem, RecordListing } from "./dto";
+import type { FindResponse, FindResultItem, RecordDetail, RecordListing } from "./dto";
 import { redactMemorySecrets } from "../memory-backend/redact";
 import type { Settings } from "../config/settings";
 import type { AgentSession } from "../session/agent-session";
@@ -208,6 +208,77 @@ function listFailure(error: string): MemoryBackendListResult {
 
 function editFailure(message: string): MemoryBackendEditResult {
 	return { backend: "memvidkb", status: "failed", message };
+}
+
+/** How a caller reads one record in full: the only surface that serves its text and `capturedAt`. */
+function recordReadRef(config: MemvidkbBackendConfig, track: string, recordId: string): string {
+	return `read \`knowledge://record/${config.context}/${track}/${recordId}\``;
+}
+
+/**
+ * Why a destructive edit may not proceed, or `null` when the caller proved it read the row.
+ *
+ * `update` replaces the stored text wholesale and `forget` erases the whole document behind
+ * the row, so an unverified id destroys state nobody looked at: a recall or list row is a
+ * clipped preview, and a production `forget` erased a record on the strength of one. The row
+ * passed here is the service's own answer to a read of exactly the id named, taken moments
+ * before the write, so it is what the proof is checked against — never a cache.
+ *
+ * @param config - Resolved backend config, for the context name in the read reference.
+ * @param track - The default track the edit is addressed to.
+ * @param requestedId - The id the caller asked to edit.
+ * @param row - The record the read returned for that id.
+ * @param proof - The caller's read-back token: the row's `capturedAt`, if any. The refusal text
+ * names it `captured:` because that is the label the knowledge:// record read prints it under
+ * (`internal-urls/knowledge-protocol.ts:22`); a field name the caller never saw is a hint it
+ * cannot follow.
+ * @param op - Which destructive op is being refused, so the message names the real call.
+ * @returns A refusal carrying the read the caller must perform, or `null` to proceed.
+ */
+function readBackRefusal(
+	config: MemvidkbBackendConfig,
+	track: string,
+	requestedId: string,
+	row: RecordDetail,
+	proof: string | undefined,
+	op: "update" | "forget",
+): MemoryBackendEditResult | null {
+	const readRef = recordReadRef(config, track, requestedId);
+	if (row.id !== requestedId) {
+		// The row behind the named id is not the row read: neither the write nor its target is
+		// the one this call describes, and a retry of the same id cannot make it so.
+		return {
+			backend: "memvidkb",
+			status: "precondition_failed",
+			message:
+				`${KNOWLEDGE_ERROR_PREFIX.forbidden}${op} refused the request before sending it: reading id ${requestedId} ` +
+				`returned record ${row.id}, so the row named is not the row read. Nothing was sent. ` +
+				`Re-issue against the id ${readRef} actually shows.`,
+		};
+	}
+	const supplied = proof?.trim() ?? "";
+	if (supplied.length === 0) {
+		return {
+			backend: "memvidkb",
+			status: "precondition_failed",
+			message:
+				`${KNOWLEDGE_ERROR_PREFIX.unavailable}${op} refused the request before sending it: record ${requestedId} ` +
+				`was never read back, so this edit would destroy state no caller has seen. Nothing was sent. ` +
+				`${readRef} first, then resend the value on its \`captured:\` line as expected_captured_at.`,
+		};
+	}
+	if (supplied !== row.capturedAt) {
+		return {
+			backend: "memvidkb",
+			status: "precondition_failed",
+			message:
+				`${KNOWLEDGE_ERROR_PREFIX.unavailable}${op} refused the request before sending it: expected_captured_at ` +
+				`"${supplied}" is not the value on record ${requestedId}'s \`captured:\` line, which is ` +
+				`"${row.capturedAt}" — the row is not the one read, or it has changed since. Nothing was sent. ` +
+				`${readRef} again and resend what that line reports.`,
+		};
+	}
+	return null;
 }
 
 /** Markdown for the system-prompt append section: what is where, and what this session may write. */
@@ -795,15 +866,26 @@ export const memvidkbBackend = {
 			};
 		}
 
+		const content = input.content?.trim() ?? "";
+		if (input.op === "update" && content.length === 0) {
+			return {
+				backend: "memvidkb",
+				status: "failed",
+				message: `${KNOWLEDGE_ERROR_PREFIX.unavailable}edit refused the request before sending it: update requires content; nothing was sent`,
+			};
+		}
+
+		// Both destructive ops start with the same full read the caller had to make: the row
+		// returned is the only thing this edit may touch, and the only thing the caller's proof
+		// is checked against. An id the service cannot resolve stays a not-found failure.
+		const current = await inspectRecord(config, { track: track.value, recordId: id });
+		if (!current.ok) return editFailure(current.error);
+		const refusal = readBackRefusal(config, track.value, id, current.data, input.expectedCapturedAt, input.op);
+		if (refusal) return refusal;
+
 		if (input.op === "update") {
-			const content = input.content?.trim() ?? "";
-			if (content.length === 0) {
-				return {
-					backend: "memvidkb",
-					status: "failed",
-					message: `${KNOWLEDGE_ERROR_PREFIX.unavailable}edit refused the request before sending it: update requires content; nothing was sent`,
-				};
-			}
+			// A supersede mints a successor and points this row at it, so the corrected text
+			// replaces the stored one wholesale — which is why it needed the read-back above.
 			const swapped = await supersedeRecord(config, {
 				track: track.value,
 				recordId: id,
@@ -822,10 +904,8 @@ export const memvidkbBackend = {
 			};
 		}
 
-		// Erase is addressed by `sourceUri`, which the caller does not have: resolve the id
-		// to its uri first, and refuse to delete anything if that read fails.
-		const current = await inspectRecord(config, { track: track.value, recordId: id });
-		if (!current.ok) return editFailure(current.error);
+		// Erase is addressed by `sourceUri`, which the caller does not have: it is taken from the
+		// read above, so no uri is ever erased that was not read back as the record named.
 		const erased = await eraseDocument(config, { track: track.value, sourceUri: current.data.uri });
 		if (!erased.ok) return editFailure(erased.error);
 		const report = erased.data;

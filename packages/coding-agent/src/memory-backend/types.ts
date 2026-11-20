@@ -143,12 +143,17 @@ export interface MemoryBackendEditInput {
 	content?: string;
 	/** Successor id for `invalidate`, when the backend supports soft supersession. */
 	replacementId?: string;
+	/**
+	 * Read-back proof for a destructive edit: the `capturedAt` of the row the caller
+	 * actually read. A backend that can check it refuses the edit without it.
+	 */
+	expectedCapturedAt?: string;
 }
 
 /** What one edit call did, or precisely what it refused to do. */
 export interface MemoryBackendEditResult {
 	backend: MemoryBackendId;
-	status: "updated" | "forgotten" | "invalidated" | "not_found" | "unsupported" | "failed";
+	status: "updated" | "forgotten" | "invalidated" | "not_found" | "unsupported" | "failed" | "precondition_failed";
 	/** Human-readable outcome, always present so the tool never has to invent one. */
 	message: string;
 }

@@ -37,6 +37,8 @@ const TOKEN = "kb-parity-test-bearer";
 const TOKEN_ENV = "MEMVIDKB_PARITY_TEST_TOKEN";
 const RECORD_ID = "rec-42";
 const RECORD_URI = "mv2://dev/rec-42";
+/** The `capturedAt` the stub's record detail reports — the read-back proof a destructive edit needs. */
+const CAPTURED_AT = "2026-11-16T04:00:00Z";
 
 type Recorded = { method: string; path: string; search: string; body: string };
 
@@ -330,12 +332,15 @@ describe("memory_edit verbs", () => {
 			op: "update",
 			id: RECORD_ID,
 			content: "Roll the router before the gateway.",
+			expected_captured_at: CAPTURED_AT,
 		});
 
-		expect(requests).toHaveLength(1);
-		expect(requests[0]?.method).toBe("POST");
-		expect(requests[0]?.path).toBe(`/memories/dev/records/${RECORD_ID}/supersede`);
-		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		// The proof is checked against a read of the row, so the write is preceded by that read.
+		expect(requests.map(request => `${request.method} ${request.path}`)).toEqual([
+			`GET /memories/dev/records/${RECORD_ID}`,
+			`POST /memories/dev/records/${RECORD_ID}/supersede`,
+		]);
+		const body = JSON.parse(requests[1]?.body ?? "{}") as Record<string, unknown>;
 		// `title` is a documented SupersedeRequest field now (the server no longer
 		// fabricates the successor's title from the prior); it carries the derived
 		// first line of the corrected text, and no other key rides the wire.
@@ -348,7 +353,7 @@ describe("memory_edit verbs", () => {
 
 	it("resolves the id to its uri before erasing, so a delete cannot address the wrong row", async () => {
 		const tool = MemoryEditTool.createIf(makeSession(memvidkbSettings()))!;
-		await tool.execute("edit-forget", { op: "forget", id: RECORD_ID });
+		await tool.execute("edit-forget", { op: "forget", id: RECORD_ID, expected_captured_at: CAPTURED_AT });
 
 		expect(requests.map(request => `${request.method} ${request.path}`)).toEqual([
 			`GET /memories/dev/records/${RECORD_ID}`,

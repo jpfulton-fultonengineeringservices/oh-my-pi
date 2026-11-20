@@ -44,7 +44,9 @@ function recordPath(track: string, recordId: string, suffix: string): string {
  *
  * The bounded listing deliberately serves only a clipped snippet, so this is the call
  * that answers "what does this record actually say" — and the one `memory_edit forget`
- * uses to turn an id into the `uri` the erase route requires.
+ * uses to turn an id into the `uri` the erase route requires. It doubles as the read-back
+ * a destructive edit is gated on: `edit()` checks the caller's proof against exactly this
+ * answer, so an erase never addresses a uri that was not read back as the record named.
  *
  * @param endpoint - Service origin and bearer.
  * @param args - Track and record id.
