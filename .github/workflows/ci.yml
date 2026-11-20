@@ -168,7 +168,8 @@ jobs:
       # (the old expression) sent pushes straight into that hole. PRs keep
       # running hosted, upstream pushes keep their vmon sandboxes, and a fork
       # push now runs the same jobs on GitHub-hosted runners instead of never.
-      # Releases on a fork also land here: slower, but they actually run.
+      # There is no vmon Bazel repository or remote cache there, so the Bazel
+      # jobs build cold and the darwin targets fetch their SDK from Apple.
       runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       steps:
          - uses: actions/checkout@v4
