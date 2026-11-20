@@ -294,7 +294,12 @@ describe("learn execute (memvidkb backend)", () => {
 		const posted = postedRecords();
 		expect(posted).toHaveLength(1);
 		expect(posted[0]?.content).toBe("Roll the gateway before the router.");
-		expect(posted[0]?.title).toBe("deploy order");
+		// The capture's context must not title the record — two lessons captured under one
+		// context would share a title, and titles are how records get told apart before an
+		// erase. The title comes from the record's own first line; the context rides as a
+		// recoverable `context=` tag.
+		expect(posted[0]?.title).toBe("Roll the gateway before the router.");
+		expect(posted[0]?.tags).toEqual(["context=deploy order"]);
 		expect(posted[0]?.originActor).toBe("coding-agent-learn");
 		expect(requests[0]?.path).toBe("/memories/dev/records");
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("knowledge base") });

@@ -78,12 +78,18 @@ export async function inspectRecord(
  *
  * The service has no in-place update: `content` is corrected by minting a successor and
  * pointing the prior record at it, which is why the outcome reports both ids and both
- * URIs. Only the two documented required fields go on the wire — the optional
+ * URIs. The corrected text carries its own display `title` so the successor is not born
+ * untitled — a listing renders `# ${title ?? id}`, and a bare uuid where words used to
+ * be is the exact regression the remember-side derivation exists to prevent. Like every
+ * optional here, `title` is dropped from the body when blank rather than sent empty;
+ * `SupersedeRequest` carries no `deny_unknown_fields` (`src/api/records/dto.rs:63-88`),
+ * so a service that does not yet consume `title` ignores the key. The optional
  * `id`/`capturedAt`/`provider` keys are left off rather than sent as empty strings,
  * which the service would read as caller-chosen values.
  *
  * @param endpoint - Service origin and bearer.
- * @param args - Track, record id, corrected text, and the actor making the correction.
+ * @param args - Track, record id, corrected text, the successor's display title, and the
+ *   actor making the correction.
  * @param signal - Caller cancellation.
  * @returns The swapped pair, or a prefixed failure; a failure superseded nothing.
  */
@@ -94,6 +100,7 @@ export async function supersedeRecord(
 		readonly recordId: string;
 		readonly content: string;
 		readonly originActor: string;
+		readonly title?: string;
 	},
 	signal?: AbortSignal,
 ): Promise<MemvidkbOutcome<SupersedeResponse>> {
@@ -111,7 +118,7 @@ export async function supersedeRecord(
 		{
 			method: "POST",
 			path: recordPath(track.value, recordId.value, "/supersede"),
-			body: { content: content.value, originActor: originActor.value },
+			body: { content: content.value, originActor: originActor.value, title: args.title?.trim() || undefined },
 			subject: `supersede of record "${recordId.value}" in track "${track.value}"`,
 			write: true,
 		},

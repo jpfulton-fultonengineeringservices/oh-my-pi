@@ -292,7 +292,12 @@ describe("memvidkb backend save", () => {
 		// workspace label, and the route documents originActor as caller-named provenance
 		// (`src/api/records/dto.rs:30-33`), never a value invented from configuration.
 		expect(body["originActor"]).toBe("agent:omp-memvidkb-backend");
-		expect(body["title"]).toBe("preference");
+		// The caller's context must never become the title: distinct records written under
+		// one context would share a title, and the title is how records are told apart
+		// before an erase. It is derived from the record's own first line; the context
+		// travels as a recoverable `context=` tag instead.
+		expect(body["title"]).toBe("Roll the gateway before the router.");
+		expect(body["tags"]).toEqual(["context=preference"]);
 	});
 
 	it("carries an explicit source as the producing actor", async () => {
