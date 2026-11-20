@@ -2,7 +2,7 @@ name: CI
 
 on:
    push:
-      branches: [main]
+      branches: [main, fulton/rebase-v18.20.0]
       paths:
          - "packages/**"
          - "crates/**"
@@ -128,7 +128,7 @@ jobs:
          # fetch-tags to main refs.
          - uses: actions/checkout@v4
            with:
-              fetch-tags: ${{ github.ref == 'refs/heads/main' }}
+              fetch-tags: ${{ contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) }}
          - name: Detect release tag at HEAD
            id: detect
            shell: bash
@@ -140,7 +140,7 @@ jobs:
                 refs/tags/v[0-9]*)
                   release_tag="${{ github.ref_name }}"
                   ;;
-                refs/heads/main)
+                refs/heads/main|refs/heads/fulton/rebase-v18.20.0)
                   if [ "${{ github.event_name }}" != "pull_request" ]; then
                     release_tag=$(git tag --points-at HEAD | grep -E '^v[0-9]' | head -n1 || true)
                   fi
@@ -433,13 +433,13 @@ jobs:
          # looks it up and the probe and save below talk to GitHub.
          - name: Locate GitHub's cache service
            id: gh-results
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref)
            uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
            with:
               script: core.setOutput("url", process.env.ACTIONS_RESULTS_ORL || process.env.ACTIONS_RESULTS_URL)
          - name: Probe native addon cache entry
            id: natives-cache-probe
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref)
            continue-on-error: true
            uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            env:
@@ -449,7 +449,7 @@ jobs:
               key: ${{ steps.natives-key.outputs.key }}
               lookup-only: true
          - name: Save native addon cache entry
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.natives-cache-probe.outputs.cache-hit != 'true'
            continue-on-error: true
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            env:
@@ -458,7 +458,7 @@ jobs:
               path: ci-natives
               key: ${{ steps.natives-key.outputs.key }}
          - name: Prune superseded native addon cache entries
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.natives-cache-probe.outputs.cache-hit != 'true'
            continue-on-error: true
            shell: bash
            env:
@@ -466,7 +466,7 @@ jobs:
               PREFIX: ${{ steps.natives-key.outputs.prefix }}
            run: |
               # Best-effort: a failed prune leaves eviction to GitHub's LRU.
-              gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main --key "$PREFIX" \
+              gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$PREFIX" \
                   --sort created_at --order desc --limit 100 --json id --jq '.[2:][].id' \
                 | while read -r id; do
                     gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
@@ -852,11 +852,11 @@ jobs:
               name: omp-export-viewer
               path: packages/coding-agent/export-assets/*.js
               if-no-files-found: error
-         # Main-only save, after the build so it is off the leg's critical
+         # Default-branch-only save, after the build so it is off the leg's critical
          # path: caches saved on a tag or branch are readable only by that ref
          # yet count against the shared 10 GB repo cache quota.
          - name: Save bun store
-           if: github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+           if: contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.bun-cache.outputs.cache-hit != 'true'
            continue-on-error: true
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
@@ -999,10 +999,10 @@ jobs:
               restore-keys: |
                  bun-${{ runner.os }}-
          - run: bun install --frozen-lockfile
-         # Main-only save: caches saved on a tag or branch are readable only by
+         # Default-branch-only save: caches saved on a tag or branch are readable only by
          # that ref yet count against the shared 10 GB repo cache quota.
          - name: Save bun store
-           if: github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+           if: contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.bun-cache.outputs.cache-hit != 'true'
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
               path: ~/.bun/install/cache
@@ -1193,10 +1193,10 @@ jobs:
               restore-keys: |
                  bun-${{ runner.os }}-
          - run: bun install --frozen-lockfile
-         # Main-only save: caches saved on a tag or branch are readable only by
+         # Default-branch-only save: caches saved on a tag or branch are readable only by
          # that ref yet count against the shared 10 GB repo cache quota.
          - name: Save bun store
-           if: github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+           if: contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.bun-cache.outputs.cache-hit != 'true'
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
               path: ~/.bun/install/cache
