@@ -45,6 +45,25 @@ export interface MemoryBackendSearchItem {
 	source?: string;
 	timestamp?: string;
 	score?: number;
+	/** Track the hit was retrieved from, when the backend scopes its reads to one. */
+	track?: string;
+	/** Context name the hit's record is addressable under, when the backend has one. */
+	context?: string;
+	/**
+	 * `knowledge://record/<context>/<track>/<record-id>` a later read resolves to the
+	 * stored text. Absent when the hit addresses no record — an ingested-document
+	 * chunk, say — which is also the signal that `id` is a frame id `memory_edit`
+	 * cannot address.
+	 */
+	pointer?: string;
+	/**
+	 * Whether `content` is the service's clipped snippet rather than the stored text.
+	 * Absent when the backend has no documented clipping; `snippetLimit` names the
+	 * ceiling it was measured against.
+	 */
+	truncated?: boolean;
+	/** Character ceiling `truncated` was measured against, when the backend reports one. */
+	snippetLimit?: number;
 }
 
 export interface MemoryBackendSearchResult {

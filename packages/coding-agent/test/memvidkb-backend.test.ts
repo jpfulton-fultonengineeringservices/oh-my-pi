@@ -178,6 +178,12 @@ describe("memvidkb backend search", () => {
 			source: "mv2://dev/deploy.md#chunk-0",
 			timestamp: new Date(1_763_000_000 * 1000).toISOString(),
 			score: 0.5,
+			// Scope travels even when the hit addresses no record; `pointer` stays absent,
+			// which is what marks this `id` as a frame id.
+			track: "dev",
+			context: "fulton",
+			truncated: false,
+			snippetLimit: 200,
 		});
 		// One request, on the route the service registers, with the slash-suffixed base fixed up.
 		expect(requests).toHaveLength(1);
