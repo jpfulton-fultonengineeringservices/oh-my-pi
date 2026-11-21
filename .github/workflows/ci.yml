@@ -530,6 +530,18 @@ jobs:
                 diff <(echo "$expected") <(echo "$actual") || true
                 exit 1
               fi
+         - name: Install llvm-objdump on GitHub-hosted runners
+           if: runner.environment == 'github-hosted'
+           run: |
+              set -euo pipefail
+              # vmon's omp-ci image ships llvm; GitHub's ubuntu-22.04 image
+              # does not, and fork pushes are routed there (see runs-on
+              # above), so the Mach-O check below died with "command not
+              # found". Install it only where it is missing.
+              command -v llvm-objdump >/dev/null 2>&1 && exit 0
+              sudo apt-get update -qq
+              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq llvm
+              command -v llvm-objdump >/dev/null 2>&1
          - name: Verify Apple Foundation Models bridge
            run: |
               set -euo pipefail
