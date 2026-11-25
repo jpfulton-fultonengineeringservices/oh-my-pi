@@ -614,6 +614,11 @@ export const memvidkbBackend = {
 			track: track.value,
 			content: redactMemorySecrets(content),
 			originActor,
+			// The gateway that produced the content, named by the caller — the tool layer
+			// reads it off the session's active model. `rememberRecord` checks it against
+			// `config.providers` and refuses before dispatching, so a write never leaves
+			// with a producer the operator did not grant. Absent defers to the service.
+			provider: input.provider,
 			title: input.context === undefined ? undefined : redactMemorySecrets(input.context),
 		});
 		if (!stored.ok) return saveFailure(stored.error);

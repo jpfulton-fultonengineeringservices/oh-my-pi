@@ -394,6 +394,81 @@ describe("memvidkb backend save", () => {
 		expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.unavailable)).toBe(true);
 		expect(requests).toHaveLength(0);
 	});
+
+	// `.memvidkb`'s `providers` is an operator grant, not decoration: the harness default
+	// is `["litellm"]` (the gateway these workspaces actually sit behind), and every arm
+	// below proves a different edge of that one document. `requests` is the transport spy —
+	// the stub server records only traffic that really left through `client.ts`, so a
+	// refusal that asserts an empty list proves the policy ran BEFORE a socket opened,
+	// which a message-substring match alone could never show.
+	it("names the admitting provider on the wire as the record's producer", async () => {
+		const result = await memvidkbBackend.save!(context(), input({ provider: "litellm" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("litellm");
+	});
+
+	it("trims the named provider before admitting and sending it", async () => {
+		await memvidkbBackend.save!(context(), input({ provider: "  litellm  " }));
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("litellm");
+	});
+
+	it("refuses a provider the context's .memvidkb providers list does not admit, dispatching nothing", async () => {
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(0);
+		expect(result.ids).toEqual([]);
+		expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.forbidden)).toBe(true);
+		// Names the key, the offending value, and the configured list, so one line is
+		// enough for an operator to fix the file.
+		expect(result.message).toContain('provider "openrouter"');
+		expect(result.message).toContain('.memvidkb "providers"');
+		expect(result.message).toContain("litellm");
+		expect(result.message).toContain("Nothing was sent");
+		expect(requests).toHaveLength(0);
+	});
+
+	it('admits any named provider under the "*" wildcard', async () => {
+		await writeConfig({ providers: ["*"] });
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("openrouter");
+	});
+
+	it("restricts nothing when .memvidkb carries an empty providers list", async () => {
+		// Empty is the absence of a rule, not a rule that admits nobody: refusing here would
+		// strip writes from every workspace that never wrote the key. The service's own
+		// `allowedProviders` is the authority in this case.
+		await writeConfig({ providers: [] });
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("openrouter");
+	});
+
+	it("restricts nothing when .memvidkb carries no providers key at all", async () => {
+		// The authoritative reader collapses an absent key to `[]`, which is the arm above;
+		// this pins that the backend does not turn "never configured" into a refusal.
+		await writeConfig({ providers: undefined });
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+	});
+
+	it("sends no provider name when the caller names none, leaving the call to the service", async () => {
+		// A provider the caller cannot name is not a provider the caller may invent: the
+		// field stays off the wire rather than arriving with a guessed gateway.
+		const result = await memvidkbBackend.save!(context(), input());
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect("provider" in body).toBe(false);
+	});
 });
 
 describe("memvidkb backend edit", () => {

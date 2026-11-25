@@ -350,6 +350,49 @@ describe("memvidkb client records", () => {
 		expect(requests).toHaveLength(0);
 	});
 
+	// The provider grant is enforced at this boundary — the one place a write crosses — so
+	// an endpoint assembled by hand exercises it with no config loader in the way. `requests`
+	// is filled by the stub server's fetch handler, so an empty list is proof no socket
+	// opened: a message-substring match alone would also be satisfied by an outage.
+	it("refuses a provider the endpoint's grant does not admit, before opening a socket", async () => {
+		const outcome = await rememberRecord(
+			{ ...endpoint(), context: "fulton", providers: ["litellm"] },
+			{ track: "dev", content: "x", originActor: "user", provider: "openrouter" },
+		);
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.error.startsWith(KNOWLEDGE_ERROR_PREFIX.forbidden)).toBe(true);
+		expect(outcome.error).toContain('provider "openrouter"');
+		expect(outcome.error).toContain('context "fulton"');
+		expect(outcome.error).toContain('.memvidkb "providers"');
+		expect(outcome.error).toContain("litellm");
+		expect(requests).toHaveLength(0);
+	});
+
+	it("sends an admitted provider as the record's producer", async () => {
+		const outcome = await rememberRecord(
+			{ ...endpoint(), context: "fulton", providers: ["litellm"] },
+			{ track: "dev", content: "x", originActor: "user", provider: "litellm" },
+		);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(Object.keys(body).sort()).toEqual(["content", "originActor", "provider"]);
+		expect(body["provider"]).toBe("litellm");
+	});
+
+	it("sends any provider when the grant is empty, which is no rule at all", async () => {
+		const outcome = await rememberRecord(
+			{ ...endpoint(), context: "fulton", providers: [] },
+			{ track: "dev", content: "x", originActor: "user", provider: "openrouter" },
+		);
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("openrouter");
+	});
+
 	it("says plainly that an unreachable write stored nothing", async () => {
 		const outcome = await rememberRecord(
 			{ baseUrl: closedPortBaseUrl, tokenEnvVar: TOKEN_ENV, token: TOKEN },

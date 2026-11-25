@@ -121,6 +121,9 @@ export class LearnTool implements AgentTool<LearnSchema> {
 		const kbResult = await saveLessonToKb(this.session.settings.getAgentDir(), this.session.cwd, {
 			memory: params.memory,
 			...(params.context === undefined ? {} : { context: params.context }),
+			// The lesson is this session's model's own conclusion, so the record says which
+			// gateway produced it; the backend refuses a name `.memvidkb` does not admit.
+			provider: this.session.getActiveModel?.()?.provider,
 		});
 		if (kbResult.stored === 0) {
 			throw new Error(kbResult.message ?? "Knowledge base did not store the lesson; nothing was sent.");
@@ -172,6 +175,7 @@ export class LearnTool implements AgentTool<LearnSchema> {
 				name: params.skill.name,
 				description: params.skill.description,
 				...(params.context === undefined ? {} : { context: params.context }),
+				provider: this.session.getActiveModel?.()?.provider,
 			});
 			if (backing.stored === 0) {
 				throw new Error(

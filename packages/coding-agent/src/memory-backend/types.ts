@@ -60,6 +60,14 @@ export interface MemoryBackendSaveInput {
 	context?: string;
 	source?: string;
 	importance?: number;
+	/**
+	 * Gateway provider that produced the content being stored — per-call provenance, never
+	 * a `.memvidkb` key. The memvidkb backend sends it as the record's `provider` and
+	 * refuses locally, before anything is sent, when the workspace's `.memvidkb` "providers"
+	 * grant is non-empty and does not admit it. Absent means no producer was named, which
+	 * leaves the decision to the service.
+	 */
+	provider?: string;
 }
 
 export interface MemoryBackendSaveResult {

@@ -45,6 +45,12 @@ export interface KbLessonCapture {
 	readonly memory: string;
 	/** Optional source context, carried as the record's display title. */
 	readonly context?: string;
+	/**
+	 * Gateway provider of the model that produced the lesson, carried as the record's
+	 * `provider`. A name the workspace's `.memvidkb` "providers" grant does not admit is
+	 * refused before anything is sent; absent leaves the judgement to the service.
+	 */
+	readonly provider?: string;
 }
 
 /** One managed-skill capture, named by the skill file that was just minted. */
@@ -55,6 +61,8 @@ export interface KbSkillCapture {
 	readonly description: string;
 	/** Optional source context, carried as the record's display title. */
 	readonly context?: string;
+	/** Gateway provider of the model that minted the skill; see {@link KbLessonCapture.provider}. */
+	readonly provider?: string;
 }
 
 /** Nothing this sink can send: an absent `save`, or a capture with no text in it. */
@@ -101,6 +109,7 @@ export async function saveLessonToKb(
 	return saveRecord(agentDir, cwd, {
 		content: capture.memory,
 		...(capture.context === undefined ? {} : { context: capture.context }),
+		...(capture.provider === undefined ? {} : { provider: capture.provider }),
 		source: KB_CAPTURE_SOURCE,
 	});
 }
@@ -130,6 +139,7 @@ export async function saveManagedSkillRecordToKb(
 	return saveRecord(agentDir, cwd, {
 		content,
 		...(capture.context === undefined ? {} : { context: capture.context }),
+		...(capture.provider === undefined ? {} : { provider: capture.provider }),
 		source: KB_CAPTURE_SOURCE,
 	});
 }

@@ -22,6 +22,8 @@ import {
 	RETIRED_MEMORY_BACKENDS,
 	retiredMemoryBackendMessage,
 } from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
+import type { MemoryBackendSaveInput } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
+import { memvidkbBackend } from "@oh-my-pi/pi-coding-agent/memvidkb/backend";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
 import { loadMnemopiConfig, type MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -2253,5 +2255,62 @@ describe("memory.backend retirement", () => {
 			await expect(memory.status()).rejects.toThrow(expected);
 			await expect(memory.list()).rejects.toThrow(expected);
 		}
+	});
+});
+
+/**
+ * The `providers` grant in `.memvidkb` only means anything if a write arrives carrying the
+ * producer it names, and the only honest source of that name is the model the session is
+ * actually running. These arms pin the tool→backend half of that wire: the backend and
+ * client specs prove the gate fires on what arrives here.
+ */
+describe("memvidkb retain write attribution", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+		registeredState = undefined;
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	function kbSessionWithModel(provider: string | undefined): ToolSession {
+		const session = makeSession(Settings.isolated({ "memory.backend": "memvidkb" }));
+		if (provider !== undefined) {
+			(session as unknown as { getActiveModel: () => { provider: string } }).getActiveModel = () => ({
+				provider,
+			});
+		}
+		return session;
+	}
+
+	function captureSaves(): MemoryBackendSaveInput[] {
+		const calls: MemoryBackendSaveInput[] = [];
+		vi.spyOn(memvidkbBackend, "save").mockImplementation(async (_context, input) => {
+			calls.push(input);
+			return { backend: "memvidkb", stored: 1, ids: [`rec-${String(calls.length)}`] };
+		});
+		return calls;
+	}
+
+	it("names the session's active model provider on every retained item", async () => {
+		const calls = captureSaves();
+		const result = await new MemoryRetainTool(kbSessionWithModel("litellm")).execute("call-1", {
+			items: [{ content: "first fact" }, { content: "second fact", context: "deploy order" }],
+		});
+		expect(result.details?.count).toBe(2);
+		expect(calls).toHaveLength(2);
+		expect(calls.map(call => call.provider)).toEqual(["litellm", "litellm"]);
+	});
+
+	it("names no provider when the session cannot resolve a model", async () => {
+		// A model the session cannot name is not a licence to guess one: the field stays
+		// unset, the grant admits it as "no producer named", and the service decides.
+		const calls = captureSaves();
+		await new MemoryRetainTool(kbSessionWithModel(undefined)).execute("call-2", {
+			items: [{ content: "a fact with no resolvable model" }],
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.provider).toBeUndefined();
 	});
 });

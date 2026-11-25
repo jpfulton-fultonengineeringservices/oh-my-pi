@@ -83,6 +83,12 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 					content: item.content,
 					context: item.context,
 					source: "coding-agent-retain",
+					// Who produced it: the gateway of the model this session is running. The
+					// backend refuses a name the workspace's `.memvidkb` "providers" grant does
+					// not admit, so this is the record's provenance and the operator's control
+					// at once. An unresolvable model sends no name and leaves the call to the
+					// service rather than guessing one.
+					provider: this.session.getActiveModel?.()?.provider,
 				});
 				if (result.stored === 0) {
 					const reason = result.message ?? "the service stored nothing";
