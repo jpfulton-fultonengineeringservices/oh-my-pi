@@ -524,9 +524,12 @@ export const memvidkbBackend = {
 	},
 
 	async clear(_agentDir, cwd, session): Promise<void> {
-		// The service owns this memory and registers no delete route (`src/lib.rs:139-177`),
-		// so there is nothing local to wipe and no central state this backend may destroy.
-		// Saying so beats reporting a wipe that did not happen.
+		// The service owns this memory, and its route table — `router()` at `src/lib.rs:156`,
+		// the table itself at `:201-250`, verified against memvid-kb-rs main@51965be —
+		// registers no `DELETE` verb at all: the one erasure route is
+		// `POST /memories/{id}/erase` (`:225`), reached with a `POST`. So there is nothing
+		// local to wipe here, and no central state this backend may destroy by a route the
+		// service does not have. Saying so beats reporting a wipe that did not happen.
 		// An explicit `/memory clear` must still reach this conversation at once, the way
 		// `clearMemoryToolDeveloperInstructionsCache` does for the local engine
 		// (`memories/index.ts:252-260`): dropping the freeze is what stops a block staged
