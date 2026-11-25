@@ -520,3 +520,62 @@ describe("memvidkb clear (explicit /memory clear)", () => {
 		expect(findRequests()).toHaveLength(2);
 	});
 });
+
+/**
+ * The operator-facing half of automatic recall. Both injection paths are allowed to be
+ * inert — `injectRecall` off is a standing operator choice, and an unbound or track-less
+ * binding is a misconfiguration — but they are not allowed to be *silent*: the backend's
+ * own contract said the reason "is reported by `status()` and `/memory diagnose`", while
+ * neither surface mentioned recall at all. A session then advertised a memory backend that
+ * injected nothing, with no way to ask why. These arms pin the named refusal on both.
+ */
+describe("memvidkb automatic recall refusal reporting", () => {
+	it("names the operator's own refusal on status()", async () => {
+		await writeConfigTo(temp.path(), { injectRecall: false });
+
+		const status = await memvidkbBackend.status({ cwd: temp.path(), agentDir: temp.path() });
+
+		// The service is healthy and the track is permitted: the only thing missing is
+		// consent, and that is what the report has to say.
+		expect(status.active).toBe(true);
+		expect(status.searchable).toBe(true);
+		expect(status.message).toContain("auto recall: off");
+		expect(status.message).toContain("injectRecall");
+	});
+
+	it("names the operator's own refusal on /memory diagnose", async () => {
+		await writeConfigTo(temp.path(), { injectRecall: false });
+
+		const report = await memvidkbBackend.diagnose(temp.path(), temp.path(), undefined as never);
+
+		expect(report).toBeDefined();
+		expect(report).toContain("- auto recall: off");
+		expect(report).toContain("injectRecall");
+		// The model's own verb is unaffected by this gate, and the report says so rather
+		// than leaving "no recall" to read as "no memory".
+		expect(report).toContain("memory_search");
+	});
+
+	it("names a missing default track as the reason on both surfaces", async () => {
+		await writeConfigTo(temp.path(), { tracks: [] });
+
+		const status = await memvidkbBackend.status({ cwd: temp.path(), agentDir: temp.path() });
+		const report = await memvidkbBackend.diagnose(temp.path(), temp.path(), undefined as never);
+
+		expect(status.message).toContain("auto recall: refused");
+		expect(report).toContain("- auto recall: refused");
+		// Whatever the framing, it has to carry the reason the selector itself gave — the
+		// operator needs the permitted-track list, not a bare "refused".
+		expect(status.message).toContain("usable track is permitted");
+		expect(report).toContain("usable track is permitted");
+	});
+
+	it("reports auto-recall as on when the binding grants it", async () => {
+		const status = await memvidkbBackend.status({ cwd: temp.path(), agentDir: temp.path() });
+		const report = await memvidkbBackend.diagnose(temp.path(), temp.path(), undefined as never);
+
+		expect(status.active).toBe(true);
+		expect(status.message).toContain("auto recall: on");
+		expect(report).toContain("- auto recall: on");
+	});
+});

@@ -193,6 +193,40 @@ function renderStats(config: MemvidkbBackendConfig, track: string, records: Memv
 	return lines.join("\n");
 }
 
+/**
+ * Whether automatic recall runs for a resolved binding, phrased for the operator.
+ *
+ * Both injection paths and both operator surfaces (`status()`, `/memory diagnose`) ask
+ * this one question, so the reason a session gets no recall block is the same sentence in
+ * the log, in the status line, and in the report — never a silent `undefined`.
+ *
+ * @param config - Resolved `.memvidkb` binding.
+ * @returns The default track to recall from, or the named refusal.
+ */
+function autoRecallAccess(
+	config: MemvidkbBackendConfig,
+): { readonly ok: true; readonly track: string } | RecallRefusal {
+	// The operator's standing refusal of unprompted recall. `memory_search` is the model
+	// asking for knowledge itself and stays available with this off, just as `remember:
+	// "off"` refuses writes without blinding `search`.
+	if (!config.injectRecall) {
+		return {
+			ok: false,
+			intended: true,
+			reason: "off — `.memvidkb` sets `injectRecall: false`; the model can still ask with `memory_search`",
+		};
+	}
+	const track = selectDefaultTrack(config);
+	if (!track.ok) return { ok: false, intended: false, reason: `refused — ${track.error}` };
+	return { ok: true, track: track.value };
+}
+
+/** How to tell the operator that recall is not running, on whichever surface asks. */
+function describeAutoRecall(config: MemvidkbBackendConfig): string {
+	const access = autoRecallAccess(config);
+	return access.ok ? "on" : access.reason;
+}
+
 function renderDiagnose(
 	config: MemvidkbBackendConfig,
 	track: { ok: true; value: string } | { ok: false; error: string },
@@ -207,6 +241,7 @@ function renderDiagnose(
 		`- tracks: ${config.tracks.length > 0 ? config.tracks.join(", ") : "none permitted"}`,
 		`- remember: ${config.remember}`,
 		`- recallMaxBytes: ${String(config.recallMaxBytes)}`,
+		`- auto recall: ${describeAutoRecall(config)}`,
 	];
 	lines.push(track.ok ? `- default track: ${track.value}` : `- default track: refused — ${track.error}`);
 	return lines.join("\n");
@@ -375,35 +410,55 @@ function preparationFor(
 	};
 }
 
+/** Why an automatic recall did not run, in terms an operator can act on. */
+interface RecallRefusal {
+	readonly ok: false;
+	/** The cause, named: `off` for a consent the operator set, `refused`/`unusable` for a binding fault. */
+	readonly reason: string;
+	/** `true` when the operator chose this, so it is a fact about the setup rather than a fault. */
+	readonly intended: boolean;
+}
+
 /** Config, consent, and track one automatic recall needs — or the reason it gets none. */
-type RecallGate =
-	| { readonly ok: true; readonly config: MemvidkbBackendConfig; readonly track: string }
-	| { readonly ok: false };
+type RecallGate = { readonly ok: true; readonly config: MemvidkbBackendConfig; readonly track: string } | RecallRefusal;
+
+/**
+ * Say out loud, once, why a turn got no recall block. The prompt stays clean; the log is
+ * where an operator chasing "why does this session never get its memories" looks first.
+ *
+ * @param cwd - Workspace the declined recall was asked for.
+ * @param refusal - The named cause, with whether the operator chose it.
+ */
+function logRecallRefusal(cwd: string, refusal: RecallRefusal): void {
+	if (refusal.intended) {
+		logger.info("memvidkb: automatic recall declined by configuration", { cwd, reason: refusal.reason });
+		return;
+	}
+	logger.warn("memvidkb: automatic recall unavailable", { cwd, reason: refusal.reason });
+}
 
 /**
  * Resolve the three preconditions of an automatic recall in one place, so the two
  * injection paths cannot drift apart over which of them is load-bearing.
  *
- * Every refusal is silent and inert: automatic recall is an enhancement, so an unusable
- * `.memvidkb`, an unset bearer, a context with no granted track, or `injectRecall` off
- * must leave the conversation running exactly as it would with no memory backend at all.
- * That is the fail-open the sibling reads already take; the reason is reported by
- * `status()` and `/memory diagnose`, never by the prompt.
+ * Every refusal is inert but never silent. Automatic recall is an enhancement, so an
+ * unusable `.memvidkb`, an unset bearer, a context with no granted track, or
+ * `injectRecall` off must leave the conversation running exactly as it would with no
+ * memory backend at all — the fail-open the sibling reads already take. It is not an
+ * excuse to lose the cause: the caller logs the named reason, and `status()` and
+ * `/memory diagnose` report it, so "this session has a memory backend that injects
+ * nothing" is answerable instead of guessable. The prompt never carries it, because a
+ * refusal the model cannot act on is noise in the one place noise costs tokens.
  *
  * @param cwd - Workspace whose `.memvidkb` scopes the service, context, and bearer.
- * @returns The resolved service, track, and consent, or a bare refusal.
+ * @returns The resolved service, track, and consent, or the named refusal.
  */
 async function openRecall(cwd: string): Promise<RecallGate> {
 	const loaded = await loadMemvidkbBackendConfig(cwd);
-	if (!loaded.ok) return { ok: false };
-	const config = loaded.config;
-	// The operator's standing refusal of unprompted recall. `memory_search` is the model
-	// asking for knowledge itself and stays available with this off, just as `remember:
-	// "off"` refuses writes without blinding `search`.
-	if (!config.injectRecall) return { ok: false };
-	const track = selectDefaultTrack(config);
-	if (!track.ok) return { ok: false };
-	return { ok: true, config, track: track.value };
+	if (!loaded.ok) return { ok: false, intended: false, reason: `unusable — ${loaded.error}` };
+	const access = autoRecallAccess(loaded.config);
+	if (!access.ok) return access;
+	return { ok: true, config: loaded.config, track: access.track };
 }
 
 /**
@@ -522,7 +577,7 @@ export const memvidkbBackend = {
 		return {
 			...base,
 			active: true,
-			message: `Service health: ${probe.data.body}; tracks: ${config.tracks.join(", ") || "none"}`,
+			message: `Service health: ${probe.data.body}; tracks: ${config.tracks.join(", ") || "none"}; auto recall: ${describeAutoRecall(config)}`,
 		};
 	},
 
@@ -833,8 +888,12 @@ export const memvidkbBackend = {
 		promptText: string,
 		signal?: AbortSignal,
 	): Promise<MemoryPromptPreparation | undefined> {
-		const gate = await openRecall(session.sessionManager.getCwd());
-		if (!gate.ok) return undefined;
+		const cwd = session.sessionManager.getCwd();
+		const gate = await openRecall(cwd);
+		if (!gate.ok) {
+			logRecallRefusal(cwd, gate);
+			return undefined;
+		}
 		const { config, track } = gate;
 
 		const sessionFile = recallSessionFile(session);
@@ -931,7 +990,10 @@ export const memvidkbBackend = {
 		const cwd = session?.sessionManager.getCwd();
 		if (cwd === undefined || cwd.length === 0) return undefined;
 		const gate = await openRecall(cwd);
-		if (!gate.ok) return undefined;
+		if (!gate.ok) {
+			logRecallRefusal(cwd, gate);
+			return undefined;
+		}
 		const { config, track } = gate;
 
 		const query = lastUserTurnText(messages);
