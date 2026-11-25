@@ -2,7 +2,6 @@ import type { MemoryRetainDetails } from "@oh-my-pi/pi-tui/tools/memory";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { prompt, withLoopPhase } from "@oh-my-pi/pi-utils";
-import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import { memvidkbBackend } from "../memvidkb/backend";
 import type { ToolSession } from ".";
@@ -57,12 +56,15 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "memvidkb") return null;
-		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
+		// Hand-literal rather than `isLiveMemoryBackend` on purpose: that helper excludes every
+		// retired id, and `mnemopi` stays mounted and tested here until the retired-backend
+		// refactor removes it. Re-adding `hindsight` to this list is not the fix — the mount pin
+		// in test/memory-tools.test.ts refuses that registration on purpose.
+		if (backend !== "mnemopi" && backend !== "memvidkb") return null;
 		return new MemoryRetainTool(session);
 	}
 
-	async execute(toolCallId: string, params: MemoryRetainParams): Promise<AgentToolResult<MemoryRetainDetails>> {
+	async execute(_toolCallId: string, params: MemoryRetainParams): Promise<AgentToolResult<MemoryRetainDetails>> {
 		const backend = cfgMemoryBackend.get(this.session.settings);
 		if (backend === "memvidkb") {
 			// No global tier exists in the knowledge service: a track is scoped by the
@@ -172,23 +174,10 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 			});
 		}
 
-		const state = this.session.getHindsightSessionState?.();
-		if (!state) {
-			throw new Error("Hindsight backend is not initialised for this session.");
-		}
-		// Check before queueing anything, so a disabled or unsupported global scope rejects the whole batch.
-		if (params.items.some(item => item.scope === "global")) {
-			state.assertGlobalRetainAvailable();
-		}
-
-		// Acknowledge only once the whole call is on disk; delivery happens on a later flush.
-		await state.enqueueRetain(toolCallId, params.items);
-
-		const count = params.items.length;
-		const noun = count === 1 ? "memory" : "memories";
-		return {
-			content: [{ type: "text", text: `${count} ${noun} queued.` }],
-			details: { count },
-		};
+		// No storage path outside the knowledge service and mnemopi's local bank. Unreachable
+		// by policy: the loader normalises a retired id to `off` and the runtime refuses one,
+		// and `off` mounts nothing. Asserted rather than fallen through so that a re-introduced
+		// retired id fails at the write instead of reporting a queue that nothing would flush.
+		throw new Error(`The retain tool has no storage path for the ${backend} memory backend.`);
 	}
 }

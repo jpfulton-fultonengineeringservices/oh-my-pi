@@ -1,8 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, untilAborted, toError } from "@oh-my-pi/pi-utils";
-import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
-import { formatCurrentTime, formatMemories } from "../hindsight/content";
+import { formatCurrentTime } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import { memvidkbBackend } from "../memvidkb/backend";
@@ -55,8 +54,11 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 
 	static createIf(session: ToolSession): MemoryRecallTool | null {
 		const backend = cfgMemoryBackend.get(session.settings);
-		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "memvidkb") return null;
-		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
+		// Hand-literal rather than `isLiveMemoryBackend` on purpose: that helper excludes every
+		// retired id, and `mnemopi` stays mounted and tested here until the retired-backend
+		// refactor removes it. Re-adding `hindsight` to this list is not the fix — the mount pin
+		// in test/memory-tools.test.ts refuses that registration on purpose.
+		if (backend !== "mnemopi" && backend !== "memvidkb") return null;
 		return new MemoryRecallTool(session);
 	}
 
@@ -126,41 +128,11 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				}
 			}
 
-			const state = this.session.getHindsightSessionState?.();
-			if (!state) {
-				throw new Error("Hindsight backend is not initialised for this session.");
-			}
-
-			try {
-				const response = await state.client.recall(state.bankId, params.query, {
-					budget: state.config.recallBudget,
-					maxTokens: state.config.recallMaxTokens,
-					types: state.config.recallTypes.length > 0 ? state.config.recallTypes : undefined,
-					tags: state.recallTags,
-					tagsMatch: state.recallTagsMatch,
-				});
-				const results = response.results ?? [];
-				if (results.length === 0) {
-					return {
-						content: [{ type: "text", text: "No relevant memories found." }],
-						details: {},
-						useless: true,
-					};
-				}
-				const formatted = formatMemories(results);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Found ${results.length} relevant ${results.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
-						},
-					],
-					details: {},
-				};
-			} catch (err) {
-				logger.warn("recall failed", { bankId: state.bankId, error: String(err) });
-				throw toError(err);
-			}
+			// No storage path outside the knowledge service and mnemopi's local bank. Unreachable
+			// by policy: the loader normalises a retired id to `off` and the runtime refuses one,
+			// and `off` mounts nothing. Asserted rather than fallen through so that a re-introduced
+			// retired id fails at the read instead of resolving to no result at all.
+			throw new Error(`The recall tool has no storage path for the ${backend} memory backend.`);
 		});
 	}
 }
