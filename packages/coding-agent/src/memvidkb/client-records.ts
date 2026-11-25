@@ -10,9 +10,11 @@
  * the "speaks no verb the service does not register" guard.
  *
  * Route authority for every path below is the service's own router:
- * `agents/memvid-kb-rs/src/lib.rs:155` (`/memories/{id}/erase`),
- * `:160-163` (`/memories/{id}/records/{record_id}`),
- * `:164-167` (`/memories/{id}/records/{record_id}/supersede`).
+ * `agents/memvid-kb-rs/src/lib.rs`, `router()` at `:156` with its registrations at
+ * `:201-250`, read at memvid-kb-rs main@51965be: `/memories/{id}/erase` at `:225`,
+ * `/memories/{id}/records` (POST + GET) at `:226-229`,
+ * `/memories/{id}/records/{record_id}` at `:230-233`, and
+ * `/memories/{id}/records/{record_id}/supersede` at `:234-237`.
  * Field authority is `src/api/records/dto.rs` and `src/api/documents.rs`, cited per shape
  * in `./dto.ts`.
  */
