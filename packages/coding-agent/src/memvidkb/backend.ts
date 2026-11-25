@@ -423,15 +423,19 @@ interface RecallRefusal {
 type RecallGate = { readonly ok: true; readonly config: MemvidkbBackendConfig; readonly track: string } | RecallRefusal;
 
 /**
- * Say out loud, once, why a turn got no recall block. The prompt stays clean; the log is
- * where an operator chasing "why does this session never get its memories" looks first.
+ * Say out loud why a turn got no recall block. The prompt stays clean; the log is where an
+ * operator chasing "why does this session never get its memories" looks first. Called per
+ * turn, so the operator's own choice logs at debug — a standing `injectRecall: false` would
+ * otherwise put a line in the log for every turn of every session — while the two causes
+ * that are misconfigurations warn. `status()` and `/memory diagnose` carry the same reason
+ * on demand, at any verbosity.
  *
  * @param cwd - Workspace the declined recall was asked for.
  * @param refusal - The named cause, with whether the operator chose it.
  */
 function logRecallRefusal(cwd: string, refusal: RecallRefusal): void {
 	if (refusal.intended) {
-		logger.info("memvidkb: automatic recall declined by configuration", { cwd, reason: refusal.reason });
+		logger.debug("memvidkb: automatic recall declined by configuration", { cwd, reason: refusal.reason });
 		return;
 	}
 	logger.warn("memvidkb: automatic recall unavailable", { cwd, reason: refusal.reason });
@@ -573,7 +577,11 @@ export const memvidkbBackend = {
 			return {
 				...base,
 				active: false,
-				message: "Service health check failed; every read will fail until the service answers.",
+				// The auto-recall clause travels with the outage branch too. An operator asking
+				// "why is nothing being injected" during a service outage would otherwise get a
+				// health sentence and lose the reason that has nothing to do with health — a
+				// workspace with `injectRecall: false` reads as merely downed.
+				message: `Service health check failed; every read will fail until the service answers. auto recall: ${describeAutoRecall(config)}`,
 				error: probe.error,
 			};
 		}
