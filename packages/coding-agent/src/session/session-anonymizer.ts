@@ -637,7 +637,7 @@ const ARG_SCHEMAS: Record<string, ArgSchema> = {
 	memory_list: argSchema("limit# offset#"),
 	retain: argSchema("items content context scope"),
 	recall: argSchema("query"),
-	reflect: argSchema("query context"),
+	memory_search: argSchema("query context"),
 };
 
 /** Tool-call argument keys holding search text: always a placeholder, never path-mapped. */

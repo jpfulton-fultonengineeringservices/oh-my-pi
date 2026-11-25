@@ -28,7 +28,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"memory_edit",
 	"retain",
 	"recall",
-	"reflect",
+	"memory_search",
 	"learn",
 	"manage_skill",
 	"memory_list",
@@ -84,7 +84,7 @@ export const BUILTIN_TOOL_HELP: Record<BuiltinToolName, BuiltinToolHelp> = {
 	// five tools; `omp --help` has to say so. They stay off only for a session that picks "off".
 	retain: { summary: "Store facts in long-term memory", defaultState: "on" },
 	recall: { summary: "Search long-term memory", defaultState: "on" },
-	reflect: { summary: "Synthesize an answer from long-term memory", defaultState: "on" },
+	memory_search: { summary: "Search long-term memory for the records bearing on a question", defaultState: "on" },
 	memory_edit: { summary: "Edit or forget long-term memories", defaultState: "on" },
 	memory_list: { summary: "List stored long-term memories without searching", defaultState: "on" },
 	learn: { summary: "Capture reusable lessons in long-term memory", defaultState: "off" },
@@ -96,7 +96,14 @@ export const HIDDEN_TOOL_NAMES = ["yield", "goal", "think"] as const;
 
 export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];
 
-const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([["search", "grep"]]);
+// `reflect` was the name of the verb now mounted as `memory_search`: it never generated an
+// answer, so the name was retired along with the claim. Stored configs (`tools.off`,
+// `tools.enabled`) and older session files still spell it, and an unnormalised name there is
+// silently inert — so it resolves to the current spelling instead.
+const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([
+	["search", "grep"],
+	["reflect", "memory_search"],
+]);
 
 const CANONICAL_TOOL_NAMES: Record<string, true> = Object.fromEntries(
 	[...BUILTIN_TOOL_NAMES, ...HIDDEN_TOOL_NAMES].map(name => [name, true]),

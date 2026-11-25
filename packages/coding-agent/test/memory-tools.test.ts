@@ -174,7 +174,7 @@ describe("Mnemopi tool factories", () => {
 		expect(MemoryEditTool.createIf(makeSession(offSettings))).toBeNull();
 	});
 
-	it("retain/recall/reflect/edit/list factories return tool instances when memory.backend === memvidkb", async () => {
+	it("retain/recall/memory_search/edit/list factories return tool instances when memory.backend === memvidkb", async () => {
 		// The KB is the backend these verbs were written for, so the gate above is not
 		// "only mnemopi gets tools": a configured KB session gets all five, and `memory_list`
 		// — which has no local equivalent — is offered for the KB and nothing else.
@@ -209,7 +209,7 @@ describe("Mnemopi tool factories", () => {
 		}
 	});
 
-	it("retain/recall/reflect/edit factories return tool instances when memory.backend === mnemopi", () => {
+	it("retain/recall/memory_search/edit factories return tool instances when memory.backend === mnemopi", () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		const session = makeSession(settings);
 		expect(MemoryRetainTool.createIf(session)).toBeInstanceOf(MemoryRetainTool);
@@ -221,29 +221,32 @@ describe("Mnemopi tool factories", () => {
 	it("names sibling memory tools by their xd:// URL only when they are mounted as devices", () => {
 		const session = makeSession(Settings.isolated({ "memory.backend": "mnemopi" }));
 		const recall = new MemoryRecallTool(session);
-		const reflect = new MemoryReflectTool(session);
+		const memorySearch = new MemoryReflectTool(session);
 		const edit = new MemoryEditTool(session);
 		const tools = new Map<string, Tool>([
 			["recall", recall],
-			["reflect", reflect],
+			["memory_search", memorySearch],
 			["memory_edit", edit],
 		]);
 		session.xdev = {
 			tools,
 			mountedNames: new Set(["recall", "memory_edit"]),
 			builtInNames: new Set(tools.keys()),
-			isActive: name => name === "reflect",
+			isActive: name => name === "memory_search",
 		};
 
-		expect(reflect.description).toContain("unlike `xd://recall`, blends them");
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		// `memory_search` is deliberately left out of `mountedNames` above, so this also
+		// pins the bare-name spelling of an unmounted sibling.
+		expect(memorySearch.summary).toBe("Search long-term memory for the records bearing on a question");
+		expect(memorySearch.description).toContain("Unlike `xd://recall`, which answers a specific lookup");
+		expect(recall.description).toContain("`memory_search`: the records bearing on a broader question");
 		expect(recall.description).toContain("Before any `xd://memory_edit update`");
 		expect(edit.description).toContain("Only ids returned by `xd://recall`.");
 
 		// A mounted device without a summary makes catalog summaries read its description;
 		// rendering refs must not depend on them, or this recurses without bound.
 		Object.assign(recall, { summary: undefined });
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		expect(recall.description).toContain("`memory_search`: the records bearing on a broader question");
 	});
 });
 

@@ -626,7 +626,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	memory_list: MemoryListTool.createIf,
 	retain: MemoryRetainTool.createIf,
 	recall: MemoryRecallTool.createIf,
-	reflect: MemoryReflectTool.createIf,
+	memory_search: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
 };
@@ -752,10 +752,10 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			requestedTools.push("ast_edit");
 		}
 		// Only a live backend's tools are force-included. A retired id used to appear here, which
-		// mounted `recall`/`retain`/`reflect` for a config whose every call then threw inside
+		// mounted `recall`/`retain`/`memory_search` for a config whose every call then threw inside
 		// `resolveMemoryBackend`; `off` mounts nothing, as before. See `isLiveMemoryBackend`.
 		if (isLiveMemoryBackend(memoryBackendId)) {
-			for (const name of ["recall", "retain", "reflect"]) {
+			for (const name of ["recall", "retain", "memory_search"]) {
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
@@ -826,7 +826,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 				cfgLaunchEnabled.get(session.settings)
 			);
 		}
-		if (name === "retain" || name === "recall" || name === "reflect") {
+		if (name === "retain" || name === "recall" || name === "memory_search") {
 			return isLiveMemoryBackend(memoryBackendId);
 		}
 		if (name === "memory_edit") {

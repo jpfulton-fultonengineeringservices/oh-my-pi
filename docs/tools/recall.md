@@ -12,17 +12,17 @@
    - `packages/coding-agent/src/hindsight/client.ts` — HTTP `recall` call and error mapping.
    - `packages/coding-agent/src/hindsight/bank.ts` — bank id and tag-filter scoping.
 - Mnemopi collaborators:
-  - `packages/coding-agent/src/mnemopi/state.ts` — scoped local recall and result formatting with ids.
-  - `packages/coding-agent/src/mnemopi/config.ts` — local bank scoping and recall limits.
-  - `packages/coding-agent/src/memvidkb/backend.ts` — knowledge-service `search`, refusal messages, and rendered output.
-  - `docs/tools/retain.md` — shared backend, storage, scoping, and retention behavior.
+   - `packages/coding-agent/src/mnemopi/state.ts` — scoped local recall and result formatting with ids.
+   - `packages/coding-agent/src/mnemopi/config.ts` — local bank scoping and recall limits.
+   - `packages/coding-agent/src/memvidkb/backend.ts` — knowledge-service `search`, refusal messages, and rendered output.
+   - `docs/tools/retain.md` — shared backend, storage, scoping, and retention behavior.
 
 ## Registration / Visibility
 
 - Tool metadata: `approval = "read"`, `strict = true`, `loadMode = "discoverable"`.
 - The tool is registered only for `memory.backend = "hindsight"`, `"mnemopi"`, or `"memvidkb"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`); memvidkb additionally requires a readable `.memvidkb` binding the workspace to a context and tracks.
 - With `memory.backend = "memvidkb"`, execution calls `memvidkbBackend.search(...)` against the knowledge service and renders its hits; a backend refusal is surfaced as a thrown error carrying that refusal message (`packages/coding-agent/src/tools/memory-recall.ts:65-80`).
-- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`reflect` set for any supported backend. Restricted lists are not widened.
+- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`memory_search` set for any supported backend. Restricted lists are not widened.
 - In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `xd://recall`; an explicitly requested tool remains top-level.
 - Execution is single-shot. The tool does not emit streaming argument/result updates.
 
@@ -129,4 +129,4 @@ When no matches exist:
 - Shared backend details are in `docs/tools/retain.md`: storage, subagent aliasing, bank scoping, mission setup, and mental-model behavior.
 - Hindsight mental models are not fetched by this tool. They may already be present in the agent's developer instructions because the backend caches a `<mental_models>` block separately from recall results.
 - Mnemopi developer instructions may include a `<memories>` block from auto-recall; this explicit tool does not update that block.
-- The tool returns memory hits; it does not synthesize across them. Use `reflect` for remote Hindsight synthesis; Mnemopi's `reflect` variant is local recall plus formatting.
+- The tool returns memory hits; it does not synthesize across them. Use `memory_search` for a wider read over many memories; only its Hindsight branch reaches a server-side synthesis endpoint, and the Mnemopi and memvidkb branches are local recall plus formatting.

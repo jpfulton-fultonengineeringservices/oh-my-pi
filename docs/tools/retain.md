@@ -28,7 +28,7 @@
 - Tool metadata: `strict = true`, `loadMode = "discoverable"`. Approval is dynamic: a call with any `scope: "global"` item has `approval = "write"`, because the write reaches every project's recall; otherwise `approval = "read"`, even though successful calls enqueue or perform memory writes.
 - The tool is registered only for `memory.backend = "hindsight"`, `"mnemopi"`, or `"memvidkb"`; it is absent for `"off"` and `"local"`. Hindsight additionally requires a non-empty configured API URL (`isHindsightConfigured(loadHindsightConfig(...))`); memvidkb additionally requires a readable `.memvidkb` whose context permits writes (`remember = "on"`).
 - With `memory.backend = "memvidkb"`, `scope: "global"` is refused before anything is written — the service has no global tier, a track being scoped by the `.memvidkb` context — and each item is stored through `memvidkbBackend.save(...)`; a failed item reports its index together with what was already stored and what was never attempted (`packages/coding-agent/src/tools/memory-retain.ts:67-98`).
-- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`reflect` set for any supported backend. Restricted lists are not widened.
+- In unrestricted sessions with an explicit tool list, registration auto-includes the shared `recall`/`retain`/`memory_search` set for any supported backend. Restricted lists are not widened.
 - In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `xd://retain`; an explicitly requested tool remains top-level.
 - Execution returns one final result and has no progress callback or cancellation parameter.
 
@@ -152,4 +152,4 @@ Mnemopi:
 - Built-in Hindsight seeds are `user-preferences`, `project-conventions`, and `project-decisions`. `projectTagged: true` seeds inherit the active scope's retain tags; untagged seeds read the whole bank.
 - Hindsight mental-model defaults: `hindsight.mentalModelsEnabled = true`, `hindsight.mentalModelAutoSeed = true`, `hindsight.mentalModelMaxRenderChars = 16_000`. The rendered `<mental_models>` block is frozen for the current transcript — a background reflect applies when the next transcript/session boundary reloads it, and `/memory mm reload` forces an explicit in-session refresh. First-turn loading waits up to `MENTAL_MODEL_FIRST_TURN_DEADLINE_MS = 1500`.
 - Hindsight seed lifecycle is create-only. Changing `packages/coding-agent/src/hindsight/seeds.json` does not mutate existing server-side models.
-- `recall.md` and `reflect.md` rely on the same backend selection and scoping behavior.
+- `recall.md` and `memory-search.md` rely on the same backend selection and scoping behavior.

@@ -1,7 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, untilAborted, toError } from "@oh-my-pi/pi-utils";
-import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
+import memorySearchDescription from "../prompts/tools/memory-search.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import { memvidkbBackend } from "../memvidkb/backend";
 import type { ToolSession } from ".";
@@ -14,27 +14,27 @@ const memoryReflectSchema = type({
 });
 
 /**
- * Hits one reflection draws on. Deliberately smaller than `recall`'s ceiling: a
- * synthesis reads a handful of the best-matching records, and a wider page costs
- * context without changing the answer.
+ * Hits one memory search draws on. Deliberately smaller than `recall`'s ceiling: a
+ * question that spans many memories reads a handful of the best-matching records, and a
+ * wider page costs context without changing what the answer can say.
  */
-const REFLECT_SOURCE_LIMIT = 12;
+const MEMORY_SEARCH_SOURCE_LIMIT = 12;
 
 export type MemoryReflectParams = typeof memoryReflectSchema.infer;
 
 export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> {
-	readonly name = "reflect";
+	readonly name = "memory_search";
 	readonly approval = "read" as const;
-	readonly label = "Reflect";
+	readonly label = "Search memory";
 	get description(): string {
-		return prompt.render(reflectDescription, {
+		return prompt.render(memorySearchDescription, {
 			toolRefs: sessionMemoryToolRefs(this.session),
 		});
 	}
 	readonly parameters = memoryReflectSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";
-	readonly summary = "Synthesize an answer from long-term memory";
+	readonly summary = "Search long-term memory for the records bearing on a question";
 
 	constructor(private readonly session: ToolSession) {}
 
@@ -52,10 +52,12 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 		return untilAborted(signal, async () => {
 			const backend = cfgMemoryBackend.get(this.session.settings);
 			if (backend === "memvidkb") {
-				// Synthesis here is retrieval plus framing, exactly the shape the mnemopi
-				// branch below uses: the service's own `POST /memories/{track}/ask` answers
-				// with a generated summary, and this client does not speak that route — so
-				// the honest output is what was retrieved, attributed, not a paraphrase.
+				// Retrieval, not synthesis: the service's own `POST /memories/{track}/ask`
+				// answers with a generated summary, and this client does not speak that route.
+				// The output is therefore what was retrieved, attributed to its source — the
+				// same shape the mnemopi branch below produces. Nothing mounted on this path
+				// generates prose server-side any more: the retired hindsight branch that
+				// POSTed to its own `/reflect` has been removed.
 				const query = params.context?.trim()
 					? `${params.query.trim()}\n\nAdditional context:\n${params.context.trim()}`
 					: params.query;
@@ -65,10 +67,14 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 						cwd: this.session.cwd,
 					},
 					query,
-					{ signal, limit: REFLECT_SOURCE_LIMIT },
+					{ signal, limit: MEMORY_SEARCH_SOURCE_LIMIT },
 				);
 				if (result.message !== undefined) {
-					logger.warn("reflect failed", { backend: "memvidkb", query: params.query, error: result.message });
+					logger.warn("memory_search failed", {
+						backend: "memvidkb",
+						query: params.query,
+						error: result.message,
+					});
 					throw new Error(result.message);
 				}
 				if (result.count === 0) {
@@ -112,7 +118,11 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 						details: {},
 					};
 				} catch (err) {
-					logger.warn("reflect failed", { backend: "mnemopi", bank: state.config.bank, error: String(err) });
+					logger.warn("memory_search failed", {
+						backend: "mnemopi",
+						bank: state.config.bank,
+						error: String(err),
+					});
 					throw toError(err);
 				}
 			}
@@ -121,7 +131,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 			// by policy: the loader normalises a retired id to `off` and the runtime refuses one,
 			// and `off` mounts nothing. Asserted rather than fallen through so that a re-introduced
 			// retired id fails at the read instead of resolving to no result at all.
-			throw new Error(`The reflect tool has no storage path for the ${backend} memory backend.`);
+			throw new Error(`The memory_search tool has no storage path for the ${backend} memory backend.`);
 		});
 	}
 }

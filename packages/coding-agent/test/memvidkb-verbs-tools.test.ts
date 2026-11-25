@@ -483,9 +483,9 @@ describe("memory tools route to the knowledge service", () => {
 		);
 	});
 
-	it("reflect frames retrieved records instead of inventing a synthesis", async () => {
+	it("memory_search frames retrieved records instead of inventing a synthesis", async () => {
 		const tool = MemoryReflectTool.createIf(makeSession(memvidkbSettings()))!;
-		const result = await tool.execute("reflect-1", { query: "restart order", context: "incident" });
+		const result = await tool.execute("memory-search-1", { query: "restart order", context: "incident" });
 
 		expect(requests).toHaveLength(1);
 		expect(requests[0]?.path).toBe("/memories/dev/find");
@@ -498,9 +498,9 @@ describe("memory tools route to the knowledge service", () => {
 		expect(rendered).toContain("(mv2://dev/deploy.md#chunk-0)");
 	});
 
-	it("reflect says so when there is nothing to reflect on", async () => {
+	it("memory_search says so when there is nothing to reflect on", async () => {
 		respond = () => Response.json(findBody(0));
-		const result = await MemoryReflectTool.createIf(makeSession(memvidkbSettings()))!.execute("reflect-empty", {
+		const result = await MemoryReflectTool.createIf(makeSession(memvidkbSettings()))!.execute("memory-search-empty", {
 			query: "anything",
 		});
 		expect(text(result)).toBe("No relevant information found to reflect on.");

@@ -2134,6 +2134,8 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				"tts",
 				"recall",
 				"retain",
+				"memory_search",
+				// The retired spelling must not leak either: it is an alias, not a second tool.
 				"reflect",
 				"learn",
 				"manage_skill",
@@ -2183,7 +2185,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 					"sdk_custom_tool",
 					"recall",
 					"retain",
-					"reflect",
+					"memory_search",
 				]),
 			);
 		} finally {
