@@ -17,6 +17,12 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"todo",
 	"recall",
 	"memory_search",
+	// The verb this one was called before F-17. Stored agent definitions carry the old
+	// spelling, and membership here decides the approval tier of a resumed or subagent-revived
+	// definition — which is exactly the path that may not have run through
+	// `normalizeToolNames`. Dropping it would silently escalate such an agent out of read-only,
+	// so it stays, exactly as `find` stays beside `glob`.
+	"reflect",
 	"retain",
 	"memory_edit",
 	"memory_list",

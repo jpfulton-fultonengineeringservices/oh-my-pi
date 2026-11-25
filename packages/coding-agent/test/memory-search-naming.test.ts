@@ -25,7 +25,7 @@ import {
 import { BUILTIN_TOOLS } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 import { MEMORY_BACKEND_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/memory-backend/tool-names";
-import { READ_ONLY_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/task/read-only-policy";
+import { isReadOnlyAgent, READ_ONLY_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/task/read-only-policy";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 
@@ -60,6 +60,18 @@ describe("memory_search naming (F-17)", () => {
 
 	it("treats a session whose only extra tool is memory_search as read-only", () => {
 		expect(READ_ONLY_TOOL_NAMES.has("memory_search")).toBe(true);
+	});
+
+	it("keeps the pre-rename spelling classified, so a stored definition does not escalate", () => {
+		// `isReadOnlyAgent` is fail-safe: an unlisted tool makes the agent not read-only.
+		// Agent definitions can arrive from stored or revived state under the name they were
+		// written with, and that path is not guaranteed to have run `normalizeToolNames` —
+		// so the retired spelling has to stay a member, exactly as `find` stays beside `glob`.
+		expect(READ_ONLY_TOOL_NAMES.has("reflect")).toBe(true);
+		expect(isReadOnlyAgent({ tools: ["recall", "reflect"] } as never)).toBe(true);
+		expect(isReadOnlyAgent({ tools: ["recall", "memory_search"] } as never)).toBe(true);
+		// And the set is still fail-safe for a name that was never a memory verb.
+		expect(isReadOnlyAgent({ tools: ["recall", "bash"] } as never)).toBe(false);
 	});
 
 	it("names the CLI help entry after the tool and describes retrieval, not synthesis", () => {

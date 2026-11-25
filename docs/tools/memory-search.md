@@ -123,4 +123,4 @@ Mnemopi and memvidkb:
 - Shared backend details are in `docs/tools/retain.md`: storage, subagent aliasing, bank scoping, seed mental models, and prompt injection.
 - Hindsight's reflect call does not read the cached `<mental_models>` block directly. It queries the Hindsight server over bank contents. The same session may separately have mental-model context in developer instructions.
 - Hindsight reflect and retain missions are bank-level server settings, not per-request payload. The tool only ensures them best-effort before reflecting.
-- The Mnemopi and memvidkb paths are retrieval. Renaming the verb from `reflect` removed a capability claim those two branches never had; it changed no behaviour. See `.design/memvid-kb-rs-20261124/gap-analysis.md` F-17 and the absence list in the design corpus.
+- The Mnemopi and memvidkb paths are retrieval. Renaming the verb from `reflect` removed a capability claim those two branches never had; it changed no behaviour (gap F-17, memvid-kb memory-naming gap analysis in fulton-infra-ecosystem).
