@@ -301,6 +301,66 @@ describe("memvidkb backend save", () => {
 		expect(body["originActor"]).toBe("j.patrickfulton");
 	});
 
+	it("scrubs credential-shaped text out of content and title before the wire", async () => {
+		// The service stores exactly what it is handed and a track is shared by every workspace
+		// bound to the context, so a pasted credential has to die here: scrubbing on the read
+		// path cannot undo a secret that is already durable and enumerable.
+		await memvidkbBackend.save!(
+			context(),
+			input({
+				content: "The account id AKIAABCDEFGHIJKLMNOP expires Friday.",
+				context: "kept as ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			}),
+		);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		const content = String(body["content"]);
+		const title = String(body["title"]);
+		expect(content).not.toContain("AKIAABCDEFGHIJKLMNOP");
+		expect(content).toContain("[REDACTED]");
+		expect(content).toContain("expires Friday.");
+		expect(title).not.toContain("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+		expect(title).toContain("[REDACTED]");
+	});
+
+	it("sends ordinary prose untouched", async () => {
+		// Over-redaction is its own defect: digits, hyphens and long words are not secrets, and
+		// a scrub that eats them leaves a record nobody can use.
+		const content = "Configuration defaults for run 12-3456789 live in section 3.";
+		await memvidkbBackend.save!(context(), input({ content }));
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["content"]).toBe(content);
+	});
+
+	it("scrubs the compaction recall query it sends to /find", async () => {
+		// The block it injects was already scrubbed; the query was the other half of the path,
+		// and it is user text the service may log or index.
+		await writeConfig({ injectRecall: true });
+		const session = { sessionManager: { getCwd: () => temp.path() } } as never;
+		const messages = [{ role: "user", content: "compare the id AKIAABCDEFGHIJKLMNOP rotations" }] as never;
+		await memvidkbBackend.preCompactionContext!(messages, Settings.isolated({}), session);
+		const find = requests.find(request => request.path.endsWith("/find"));
+		expect(find).toBeDefined();
+		const query = String((JSON.parse(find?.body ?? "{}") as Record<string, unknown>)["query"]);
+		expect(query).not.toContain("AKIAABCDEFGHIJKLMNOP");
+		expect(query).toContain("[REDACTED]");
+	});
+
+	it("scrubs the prompt text it sends as the turn-start recall query", async () => {
+		// The other automatic recall: it queries with the live prompt, so the same leak exists
+		// here independently of the compaction path.
+		await writeConfig({ injectRecall: true });
+		const session = {
+			sessionManager: { getCwd: () => temp.path(), getSessionFile: () => `${temp.path()}/s1.jsonl` },
+			agent: { state: { messages: [] } },
+		} as never;
+		await memvidkbBackend.beforeAgentStartPrompt!(session, "compare the id AKIAABCDEFGHIJKLMNOP rotations");
+		const find = requests.find(request => request.path.endsWith("/find"));
+		expect(find).toBeDefined();
+		const query = String((JSON.parse(find?.body ?? "{}") as Record<string, unknown>)["query"]);
+		expect(query).not.toContain("AKIAABCDEFGHIJKLMNOP");
+		expect(query).toContain("[REDACTED]");
+	});
+
 	it("never sends importance, which the route does not document", async () => {
 		const result = await memvidkbBackend.save!(context(), input({ importance: 0.9 }));
 		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;

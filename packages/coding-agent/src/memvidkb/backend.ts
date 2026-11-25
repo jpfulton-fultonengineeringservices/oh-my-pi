@@ -604,11 +604,17 @@ export const memvidkbBackend = {
 		// was stored. `context` maps to the record's display `title`, the only free-text
 		// framing field the DTO has, so it is carried rather than dropped.
 		const originActor = originActorFor(input);
+		// Scrub both free-text fields before they leave this process. The service stores
+		// exactly what it is handed, and a track is shared by every workspace bound to this
+		// context — so a token pasted into `remember` would otherwise be durable and readable
+		// from all of them. These are the helpers the mnemopi plane already applies on its own
+		// write path (`mnemopi/state.ts`), reused rather than duplicated. `originActor` is not
+		// free text: it is an actor label the service validates by shape, not content.
 		const stored = await rememberRecord(config, {
 			track: track.value,
-			content,
+			content: redactMemorySecrets(content),
 			originActor,
-			title: input.context,
+			title: input.context === undefined ? undefined : redactMemorySecrets(input.context),
 		});
 		if (!stored.ok) return saveFailure(stored.error);
 		if (input.importance === undefined) return { backend: "memvidkb", stored: 1, ids: [stored.data.id] };
@@ -830,11 +836,14 @@ export const memvidkbBackend = {
 
 		const query = promptText.trim();
 		if (query.length === 0) return undefined;
+		// The prompt text is user text and it goes out as a /find query; the rendered block is
+		// scrubbed on the way in, so scrub it on the way out as well.
+		const scrubbedQuery = redactMemorySecrets(query);
 
 		const generation = ++state.sequence;
 		let found: MemvidkbOutcome<FindResponse>;
 		try {
-			found = await findTrack(config, track, query, { limit: RECALL_INJECTION_LIMIT }, signal);
+			found = await findTrack(config, track, scrubbedQuery, { limit: RECALL_INJECTION_LIMIT }, signal);
 		} catch (error) {
 			// As in `search`: the only throw is the pre-flight abort check, and a cancelled
 			// recall is neither a service fault nor an empty answer.
@@ -898,10 +907,14 @@ export const memvidkbBackend = {
 
 		const query = lastUserTurnText(messages);
 		if (query === undefined) return undefined;
+		// The rendered block is already scrubbed (`renderRecallBlock`); the query is the other
+		// half of this path, and it is user text leaving the process. The service logs and may
+		// index what it is asked for, so scrub it on the way out as well.
+		const scrubbedQuery = redactMemorySecrets(query);
 
 		let found: MemvidkbOutcome<FindResponse>;
 		try {
-			found = await findTrack(config, track, query, { limit: RECALL_INJECTION_LIMIT }, signal);
+			found = await findTrack(config, track, scrubbedQuery, { limit: RECALL_INJECTION_LIMIT }, signal);
 		} catch (error) {
 			if (signal?.aborted) return undefined;
 			throw error;
