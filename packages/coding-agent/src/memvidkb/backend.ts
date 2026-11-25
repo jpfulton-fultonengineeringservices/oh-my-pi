@@ -712,13 +712,26 @@ export const memvidkbBackend = {
 					message: `${KNOWLEDGE_ERROR_PREFIX.unavailable}edit refused the request before sending it: update requires content; nothing was sent`,
 				};
 			}
+			// The service is the only authority on whether the prior exists (it answers 404 for
+			// an unknown id and 409 for one already superseded). Say which of those happened
+			// rather than folding "no such record" into a generic fault: a caller that typed the
+			// id from a listing it never read needs to hear that the target was never there.
 			const swapped = await supersedeRecord(config, {
 				track: track.value,
 				recordId: id,
 				content,
 				originActor: MEMORY_EDIT_ORIGIN_ACTOR,
 			});
-			if (!swapped.ok) return editFailure(swapped.error);
+			if (!swapped.ok) {
+				if (swapped.error.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)) {
+					return {
+						backend: "memvidkb",
+						status: "not_found",
+						message: `Nothing was superseded: ${swapped.error}`,
+					};
+				}
+				return editFailure(swapped.error);
+			}
 			return {
 				backend: "memvidkb",
 				status: "updated",
@@ -729,7 +742,18 @@ export const memvidkbBackend = {
 		// Erase is addressed by `sourceUri`, which the caller does not have: resolve the id
 		// to its uri first, and refuse to delete anything if that read fails.
 		const current = await inspectRecord(config, { track: track.value, recordId: id });
-		if (!current.ok) return editFailure(current.error);
+		if (!current.ok) {
+			// Same distinction as `update`: the service answering "no record by that id in a
+			// track this context may see" is an answer, not an outage.
+			if (current.error.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)) {
+				return {
+					backend: "memvidkb",
+					status: "not_found",
+					message: `Nothing was erased: ${current.error}`,
+				};
+			}
+			return editFailure(current.error);
+		}
 		const erased = await eraseDocument(config, { track: track.value, sourceUri: current.data.uri });
 		if (!erased.ok) return editFailure(erased.error);
 		const report = erased.data;

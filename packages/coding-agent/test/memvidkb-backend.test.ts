@@ -396,6 +396,113 @@ describe("memvidkb backend save", () => {
 	});
 });
 
+describe("memvidkb backend edit", () => {
+	function recordDetail(id: string): unknown {
+		return {
+			id,
+			track: "dev",
+			uri: `mv2://dev/${id}`,
+			title: null,
+			tags: [],
+			text: "The rollout uses the legacy ingress.",
+			originActor: "fulton",
+			capturedAt: "2026-11-16T04:00:00Z",
+			lastVerifiedAt: null,
+			derivedFrom: null,
+			supersededBy: null,
+		};
+	}
+
+	it("reports an unknown supersede target as not_found, not as a fault", async () => {
+		// The service owns this answer: it 404s when the prior does not exist. Folding that into
+		// `failed` would hide "you named a record that was never there" behind an outage-shaped
+		// message, which is exactly what a caller that guessed the id needs to be told.
+		respond = request =>
+			request.method === "POST" && request.path.endsWith("/supersede")
+				? new Response("{}", { status: 404 })
+				: Response.json({});
+		const result = await memvidkbBackend.edit!(context(), { op: "update", id: "kb-ghost", content: "corrected" });
+		expect(result.status).toBe("not_found");
+		expect(result.message).toContain("Nothing was superseded");
+		expect(result.message).toContain(KNOWLEDGE_ERROR_PREFIX.notFound);
+		expect(requests.filter(request => request.path.endsWith("/supersede"))).toHaveLength(1);
+	});
+
+	it("supersedes with only the two documented fields and names both records", async () => {
+		respond = request =>
+			request.method === "POST" && request.path.endsWith("/supersede")
+				? Response.json({
+						priorId: "kb-target",
+						newId: "kb-next",
+						priorUri: "mv2://dev/kb-target",
+						newUri: "mv2://dev/kb-next",
+					})
+				: Response.json(recordDetail("kb-target"));
+		const result = await memvidkbBackend.edit!(context(), { op: "update", id: "kb-target", content: "corrected" });
+		expect(result.status).toBe("updated");
+		expect(result.message).toContain("kb-target");
+		expect(result.message).toContain("kb-next");
+		const post = requests.find(request => request.path.endsWith("/supersede"));
+		const body = JSON.parse(post?.body ?? "{}") as Record<string, unknown>;
+		// The optional id/capturedAt/provider keys are omitted, never sent empty: the service
+		// would read an empty string as a caller-chosen value.
+		expect(Object.keys(body).sort()).toEqual(["content", "originActor"]);
+		expect(body["content"]).toBe("corrected");
+	});
+
+	it("refuses an update with no content before anything goes out", async () => {
+		const result = await memvidkbBackend.edit!(context(), { op: "update", id: "kb-target" });
+		expect(result.status).toBe("failed");
+		expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.unavailable)).toBe(true);
+		expect(requests).toEqual([]);
+	});
+
+	it("refuses invalidate by name and changes nothing", async () => {
+		// There is no soft-invalidate route, so the honest answer is that the op does not exist
+		// here — not a write that merely looks like one, and not a silent success.
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "invalidate",
+			id: "kb-target",
+			replacementId: "kb-new",
+		});
+		expect(result.status).toBe("unsupported");
+		expect(result.message).toContain("kb-target is unchanged");
+		expect(requests).toEqual([]);
+	});
+
+	it("never posts an erase for a record the service does not have", async () => {
+		respond = () => new Response("{}", { status: 404 });
+		const result = await memvidkbBackend.edit!(context(), { op: "forget", id: "kb-ghost" });
+		expect(result.status).toBe("not_found");
+		expect(result.message).toContain("Nothing was erased");
+		expect(requests.some(request => request.path.endsWith("/erase"))).toBe(false);
+	});
+
+	it("reports an erase that left frames behind as a failure naming them", async () => {
+		respond = request =>
+			request.method === "POST" && request.path.endsWith("/erase")
+				? Response.json({ framesRemoved: 2, chunksRemoved: 3, residualFrames: ["frame-7"] })
+				: Response.json(recordDetail("kb-target"));
+		const result = await memvidkbBackend.edit!(context(), { op: "forget", id: "kb-target" });
+		expect(result.status).toBe("failed");
+		expect(result.message).toContain("frame-7");
+	});
+
+	it("refuses every op while .memvidkb sets remember to off, sending nothing", async () => {
+		await writeConfig({ remember: "off" });
+		for (const op of ["update", "forget", "invalidate"] as const) {
+			const result = await memvidkbBackend.edit!(context(), {
+				op,
+				id: "kb-target",
+				content: "corrected",
+				replacementId: "kb-new",
+			});
+			expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.forbidden)).toBe(true);
+		}
+		expect(requests).toEqual([]);
+	});
+});
+
 describe("memvidkb backend status, prompts, and reports", () => {
 	it("reports an active backend when the service answers healthz", async () => {
 		const status = await memvidkbBackend.status!(context());
