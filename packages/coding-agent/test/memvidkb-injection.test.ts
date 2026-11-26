@@ -4,9 +4,10 @@
  *
  * The service is stubbed in-process with `Bun.serve` exactly as `test/memvidkb-backend.test.ts`
  * does, and the client is never mocked, so every arm here drives real `fetch` traffic through
- * `src/memvidkb/client.ts`. The sessions are fakes exposing only the two members the hooks
- * read (`sessionManager.getCwd`/`getSessionFile` and `agent.state.messages`), which is the same
- * surface `test/hindsight-backend.test.ts` fakes for its own backend.
+ * `src/memvidkb/client.ts`. The sessions are fakes exposing only the members the hooks read —
+ * `sessionManager.getCwd`/`getSessionFile`, the transcript branch a delivered recall is recorded
+ * on (`getBranch`/`appendCustomEntry`), and `agent.state.messages` — which is the same surface
+ * `test/hindsight-backend.test.ts` fakes for its own backend.
  *
  * The centre of gravity is the cache-stability freeze. A central knowledge service is written
  * to by other workspaces at arbitrary times, so a running conversation must not see its prompt
@@ -86,24 +87,48 @@ function dropConfig(dir: string): void {
 	rmSync(`${dir}/.memvidkb`, { force: true });
 }
 
+/** One entry of a fake transcript; only the fields the recall record uses are modelled. */
+interface FakeTranscriptEntry {
+	type: string;
+	customType?: string;
+	data?: unknown;
+	role?: string;
+}
+
 interface FakeRecallSession {
 	agent: { state: { messages: unknown[] } };
-	sessionManager: { getCwd: () => string; getSessionFile: () => string | null };
+	sessionManager: {
+		getCwd: () => string;
+		getSessionFile: () => string | null;
+		getBranch: () => FakeTranscriptEntry[];
+		appendCustomEntry: (type: string, data: unknown) => void;
+	};
 	sessionFile: string | null;
+	/** The transcript this fake stands for: the recall record `commit` writes lands here. */
+	entries: FakeTranscriptEntry[];
 }
 
 /**
  * A session exposing only what the two hooks read. `messages` is mutable so an arm can
  * simulate the first request going out, which is the event the freeze keys on.
+ * `getBranch`/`appendCustomEntry` are the transcript half: a delivered recall is recorded there
+ * (`../src/memory-backend/recall-entry`), so the fake has a real branch to record into and to
+ * read back, rather than a member that would throw the first time persistence touched it.
  */
 function makeSession(cwd: string, sessionFile: string, messages: unknown[] = []): FakeRecallSession {
+	const entries: FakeTranscriptEntry[] = [];
 	return {
 		agent: { state: { messages } },
 		sessionManager: {
 			getCwd: () => cwd,
 			getSessionFile: () => sessionFile,
+			getBranch: () => entries,
+			appendCustomEntry: (type, data) => {
+				entries.push({ type: "custom", customType: type, data });
+			},
 		},
 		sessionFile,
+		entries,
 	};
 }
 
@@ -518,5 +543,64 @@ describe("memvidkb clear (explicit /memory clear)", () => {
 		);
 		expect(second?.commit()).toBe(true);
 		expect(findRequests()).toHaveLength(2);
+	});
+});
+
+/**
+ * The operator-facing half of automatic recall. Both injection paths are allowed to be
+ * inert — `injectRecall` off is a standing operator choice, and an unbound or track-less
+ * binding is a misconfiguration — but they are not allowed to be *silent*: the backend's
+ * own contract said the reason "is reported by `status()` and `/memory diagnose`", while
+ * neither surface mentioned recall at all. A session then advertised a memory backend that
+ * injected nothing, with no way to ask why. These arms pin the named refusal on both.
+ */
+describe("memvidkb automatic recall refusal reporting", () => {
+	it("names the operator's own refusal on status()", async () => {
+		await writeConfigTo(temp.path(), { injectRecall: false });
+
+		const status = await memvidkbBackend.status({ cwd: temp.path(), agentDir: temp.path() });
+
+		// The service is healthy and the track is permitted: the only thing missing is
+		// consent, and that is what the report has to say.
+		expect(status.active).toBe(true);
+		expect(status.searchable).toBe(true);
+		expect(status.message).toContain("auto recall: off");
+		expect(status.message).toContain("injectRecall");
+	});
+
+	it("names the operator's own refusal on /memory diagnose", async () => {
+		await writeConfigTo(temp.path(), { injectRecall: false });
+
+		const report = await memvidkbBackend.diagnose(temp.path(), temp.path(), undefined as never);
+
+		expect(report).toBeDefined();
+		expect(report).toContain("- auto recall: off");
+		expect(report).toContain("injectRecall");
+		// The model's own verb is unaffected by this gate, and the report says so rather
+		// than leaving "no recall" to read as "no memory".
+		expect(report).toContain("memory_search");
+	});
+
+	it("names a missing default track as the reason on both surfaces", async () => {
+		await writeConfigTo(temp.path(), { tracks: [] });
+
+		const status = await memvidkbBackend.status({ cwd: temp.path(), agentDir: temp.path() });
+		const report = await memvidkbBackend.diagnose(temp.path(), temp.path(), undefined as never);
+
+		expect(status.message).toContain("auto recall: refused");
+		expect(report).toContain("- auto recall: refused");
+		// Whatever the framing, it has to carry the reason the selector itself gave — the
+		// operator needs the permitted-track list, not a bare "refused".
+		expect(status.message).toContain("usable track is permitted");
+		expect(report).toContain("usable track is permitted");
+	});
+
+	it("reports auto-recall as on when the binding grants it", async () => {
+		const status = await memvidkbBackend.status({ cwd: temp.path(), agentDir: temp.path() });
+		const report = await memvidkbBackend.diagnose(temp.path(), temp.path(), undefined as never);
+
+		expect(status.active).toBe(true);
+		expect(status.message).toContain("auto recall: on");
+		expect(report).toContain("- auto recall: on");
 	});
 });

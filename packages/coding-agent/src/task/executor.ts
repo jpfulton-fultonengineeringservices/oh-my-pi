@@ -69,6 +69,7 @@ import type { HindsightSessionStateApi } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
 import type { MCPManagerApi, MCPToolScope } from "../mcp/manager";
+import { resolveMemoryBackend } from "../memory-backend/resolve";
 import type { MnemopiSessionStateApi } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
@@ -4368,9 +4369,49 @@ function trackSubagentSettings(session: AgentSession, capture: WarmReviveCapture
  * agent-initiated and skip the hook, so a tool an extension registers from it, as it did at the
  * parked session's first prompt, would never come back. The result is dropped: the transcript
  * already holds what the parked session's turns added.
+ *
+ * The base prompt handed over has to be the one the parked conversation was actually running.
+ * A memory backend that injects puts a recall block into that prompt, and it does so through the
+ * per-turn prompt build a revive skips — the block reaches the base prompt only when a delivery
+ * commits. Handing over the bare base prompt would therefore announce, to anything watching this
+ * hook for that block, a session with no memory backend, on a session that has one. Re-querying
+ * is not an answer: the revived request is bound to the prompt being rebuilt, so only what the
+ * conversation already established may go into it (`MemoryBackend.revivedRecallContext`).
  */
 export async function replayRevivedAgentStart(session: AgentSession): Promise<void> {
-	await session.extensionRunner?.emitBeforeAgentStart("", undefined, session.baseSystemPrompt, "revive");
+	const runner = session.extensionRunner;
+	if (runner === undefined) return;
+	await runner.emitBeforeAgentStart("", undefined, await revivedRecallBasePrompt(session), "revive");
+}
+
+/**
+ * `session`'s base prompt as a revived turn must see it: unchanged, or with the memory recall
+ * block this conversation was given appended if the rebuilt base prompt has lost it.
+ *
+ * Best-effort by design. A revive must not fail over one injected block — the memory backend may
+ * be unresolvable because stored settings name a retired id or the workspace's `.memvidkb` is
+ * unusable — so any fault here is logged and the base prompt is handed over exactly as the
+ * harness always handed it over.
+ *
+ * @param session - The session being revived.
+ * @returns The base prompt blocks to hand `before_agent_start`.
+ */
+async function revivedRecallBasePrompt(session: AgentSession): Promise<string[]> {
+	const base = session.baseSystemPrompt;
+	try {
+		const backend = await resolveMemoryBackend(session.settings);
+		const block = await backend.revivedRecallContext?.(session);
+		// Appended, never spliced: the per-turn path adds recall after the stable blocks as well,
+		// and a base prompt that already carries it is handed over identically, so a revive never
+		// disturbs the prefix the provider has cached for this session.
+		if (block === undefined || block.length === 0 || base.includes(block)) return base;
+		return [...base, block];
+	} catch (error) {
+		logger.debug("task: could not re-stage the memory recall for a revived subagent", {
+			error: String(error),
+		});
+		return base;
+	}
 }
 
 /**

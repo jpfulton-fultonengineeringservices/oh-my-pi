@@ -664,7 +664,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				}
 				case "mm":
 					return usage(
-						"Mental-model maintenance via /memory mm is unsupported in ACP mode; use the hindsight HTTP API directly.",
+						"Mental-model maintenance via /memory mm is unsupported in ACP mode: mental models belonged to the retired Hindsight backend, which no session can select, so there is no supported route from here — and the `mm` entries listed under /memory are inert.",
 						runtime,
 					);
 				default:

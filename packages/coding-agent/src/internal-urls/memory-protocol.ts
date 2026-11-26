@@ -37,7 +37,7 @@ const MEMORY_NAMESPACE = "root";
  * error (issue #7587).
  */
 const HINDSIGHT_UNADDRESSABLE =
-	"Hindsight memories are not addressable via memory://. Recall results are final — use `recall` to search or `reflect` to synthesize. `read memory://<id>` is only available with memory.backend=mnemopi.";
+	"Hindsight memories are not addressable via memory://. Recall results are final — use `recall` to search or `memory_search` for the records bearing on a broader question. `read memory://<id>` is only available with memory.backend=mnemopi.";
 
 /**
  * Snapshot of memory roots for every registered session, deduped.
@@ -264,9 +264,9 @@ function fileBackedRootUnavailableError(backend: string | undefined): Error {
 	}
 	const searchHint =
 		backend === "mnemopi"
-			? " Use `recall`/`reflect` to search Mnemopi memories, or `read memory://<memory-id>` for a full row."
+			? " Use `recall`/`memory_search` to search Mnemopi memories, or `read memory://<memory-id>` for a full row."
 			: backend === "hindsight"
-				? " Use `recall`/`reflect` to search Hindsight memories."
+				? " Use `recall`/`memory_search` to search Hindsight memories."
 				: "";
 	return new Error(
 		`File-backed memory artifacts only exist with memory.backend=local (active backend: ${backend}).${searchHint}`,

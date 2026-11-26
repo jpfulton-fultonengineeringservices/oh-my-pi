@@ -82,7 +82,10 @@ function rememberBody(overrides: Record<string, unknown> = {}): Record<string, u
 }
 
 /** A `ToolSession` pinned to the temp agent dir and the workspace holding `.memvidkb`. */
-function kbSession(overrides: Record<string, unknown> = {}): ToolSession {
+function kbSession(
+	overrides: Record<string, unknown> = {},
+	sessionOverrides: Record<string, unknown> = {},
+): ToolSession {
 	const settings = Settings.isolated({ "autolearn.enabled": true, "memory.backend": "memvidkb", ...overrides });
 	spyOn(settings, "getAgentDir").mockReturnValue(agentDir);
 	return {
@@ -92,6 +95,7 @@ function kbSession(overrides: Record<string, unknown> = {}): ToolSession {
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		settings,
+		...sessionOverrides,
 	};
 }
 
@@ -304,6 +308,41 @@ describe("learn execute (memvidkb backend)", () => {
 		expect(requests[0]?.path).toBe("/memories/dev/records");
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("knowledge base") });
 		// The inversion this change is: no file sink involvement at all.
+		expect(saveSpy?.mock.calls).toHaveLength(0);
+		expect(await Bun.file(learnedFile).exists()).toBe(false);
+	});
+
+	// `.memvidkb`'s `providers` is an operator grant, and the capture has to say who
+	// produced what it stores for that grant to mean anything. `getActiveModel` is the
+	// session's own live model, so the name is observed rather than invented; `requests`
+	// is the stub server's own log, so an empty list proves the refusal stopped the write
+	// before a socket opened rather than merely producing a matching error string.
+	it("names the session model's provider on the lesson record", async () => {
+		await new LearnTool(kbSession({}, { getActiveModel: () => ({ provider: "litellm" }) })).execute("11", {
+			memory: "Roll the router after the gateway.",
+		});
+		const posted = postedRecords();
+		expect(posted).toHaveLength(1);
+		expect(posted[0]?.provider).toBe("litellm");
+	});
+
+	it("names the provider on a minted skill's backing record as well", async () => {
+		await new LearnTool(kbSession({}, { getActiveModel: () => ({ provider: "litellm" }) })).execute("12", {
+			memory: "The router is rolled only after the gateway.",
+			skill: { action: "create", name: "provider-attributed", description: "d", body: "b" },
+		});
+		const posted = postedRecords();
+		expect(posted).toHaveLength(2);
+		expect(posted.every(record => record.provider === "litellm")).toBe(true);
+	});
+
+	it("refuses a lesson whose provider .memvidkb providers does not admit, sending nothing", async () => {
+		await expect(
+			new LearnTool(kbSession({}, { getActiveModel: () => ({ provider: "openrouter" }) })).execute("13", {
+				memory: "A lesson from a gateway this context does not admit",
+			}),
+		).rejects.toThrow('provider "openrouter"');
+		expect(requests).toHaveLength(0);
 		expect(saveSpy?.mock.calls).toHaveLength(0);
 		expect(await Bun.file(learnedFile).exists()).toBe(false);
 	});

@@ -34,7 +34,7 @@ Selecting Mnemopi makes these discoverable tools available:
 
 - `recall` — search scoped memories. Results are previews and include memory IDs.
 - `retain` — store durable facts explicitly.
-- `reflect` — synthesize an answer across recalled memories.
+- `memory_search` — retrieve the records bearing on a broader question. On this backend the result is recalled context with its attribution, not a generated answer.
 - `memory_edit` — `update`, `forget`, or `invalidate` an editable memory by ID. Fact-table rows are read-only.
 
 Read the full content and metadata for a recalled result with `read memory://<memory-id>` before replacing it; clipped recall previews are not safe update payloads. The optional `learn` tool is also able to retain into Mnemopi when `autolearn.enabled: true`.

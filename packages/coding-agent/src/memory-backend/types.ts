@@ -79,6 +79,14 @@ export interface MemoryBackendSaveInput {
 	context?: string;
 	source?: string;
 	importance?: number;
+	/**
+	 * Gateway provider that produced the content being stored — per-call provenance, never
+	 * a `.memvidkb` key. The memvidkb backend sends it as the record's `provider` and
+	 * refuses locally, before anything is sent, when the workspace's `.memvidkb` "providers"
+	 * grant is non-empty and does not admit it. Absent means no producer was named, which
+	 * leaves the decision to the service.
+	 */
+	provider?: string;
 }
 
 export interface MemoryBackendSaveResult {
@@ -269,6 +277,26 @@ export interface MemoryBackend {
 		promptText: string,
 		signal?: AbortSignal,
 	): Promise<MemoryPromptPreparation | undefined>;
+
+	/**
+	 * The recall block this conversation was already given, for a turn the harness rebuilds
+	 * without running {@link beforeAgentStartPrompt} — a revived subagent.
+	 *
+	 * A revive is not a first turn: it re-emits `before_agent_start` over a transcript that
+	 * already exists, and the injected block reaches the base prompt only through the per-turn
+	 * prompt build a revive skips. Anything reading that hook to decide whether a memory
+	 * backend is active therefore sees an inactive one on a live, revived session. This hook
+	 * lets the same backend hand the block back.
+	 *
+	 * It must not query the service: the revived request is bound to the prompt being rebuilt,
+	 * and a fresh read could put different bytes under it. Return only state the conversation
+	 * already established — a held freeze or the copy recorded in its transcript — and
+	 * `undefined` when it never received a block.
+	 *
+	 * @param session - The session whose turn is being revived.
+	 * @returns The block the revived base prompt must carry, or `undefined` for none.
+	 */
+	revivedRecallContext?(session: AgentSession): Promise<string | undefined>;
 
 	/**
 	 * Optional hook to splice extra context into a compaction summarization.

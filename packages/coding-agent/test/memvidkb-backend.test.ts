@@ -312,6 +312,73 @@ describe("memvidkb backend save", () => {
 		expect(body["originActor"]).toBe("j.patrickfulton");
 	});
 
+	it("scrubs credential-shaped text out of content and title before the wire", async () => {
+		// The service stores exactly what it is handed and a track is shared by every workspace
+		// bound to the context, so a pasted credential has to die here: scrubbing on the read
+		// path cannot undo a secret that is already durable and enumerable.
+		await memvidkbBackend.save!(
+			context(),
+			input({
+				content: "The account id AKIAABCDEFGHIJKLMNOP expires Friday.",
+				context: "kept as ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			}),
+		);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		const content = String(body["content"]);
+		const title = String(body["title"]);
+		expect(content).not.toContain("AKIAABCDEFGHIJKLMNOP");
+		expect(content).toContain("[REDACTED]");
+		expect(content).toContain("expires Friday.");
+		expect(title).not.toContain("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+		expect(title).toContain("[REDACTED]");
+	});
+
+	it("sends ordinary prose untouched", async () => {
+		// Over-redaction is its own defect: digits, hyphens and long words are not secrets, and
+		// a scrub that eats them leaves a record nobody can use.
+		const content = "Configuration defaults for run 12-3456789 live in section 3.";
+		await memvidkbBackend.save!(context(), input({ content }));
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["content"]).toBe(content);
+	});
+
+	it("scrubs the compaction recall query it sends to /find", async () => {
+		// The block it injects was already scrubbed; the query was the other half of the path,
+		// and it is user text the service may log or index.
+		await writeConfig({ injectRecall: true });
+		const session = { sessionManager: { getCwd: () => temp.path() } } as never;
+		const messages = [{ role: "user", content: "compare the id AKIAABCDEFGHIJKLMNOP rotations" }] as never;
+		await memvidkbBackend.preCompactionContext!(messages, Settings.isolated({}), session);
+		const find = requests.find(request => request.path.endsWith("/find"));
+		expect(find).toBeDefined();
+		const query = String((JSON.parse(find?.body ?? "{}") as Record<string, unknown>)["query"]);
+		expect(query).not.toContain("AKIAABCDEFGHIJKLMNOP");
+		expect(query).toContain("[REDACTED]");
+	});
+
+	it("scrubs the prompt text it sends as the turn-start recall query", async () => {
+		// The other automatic recall: it queries with the live prompt, so the same leak exists
+		// here independently of the compaction path.
+		await writeConfig({ injectRecall: true });
+		const session = {
+			sessionManager: {
+				getCwd: () => temp.path(),
+				getSessionFile: () => `${temp.path()}/s1.jsonl`,
+				// A delivered recall is recorded on the transcript branch, so the fake needs the
+				// two members `../src/memory-backend/recall-entry` reads and writes.
+				getBranch: () => [] as never[],
+				appendCustomEntry: () => {},
+			},
+			agent: { state: { messages: [] } },
+		} as never;
+		await memvidkbBackend.beforeAgentStartPrompt!(session, "compare the id AKIAABCDEFGHIJKLMNOP rotations");
+		const find = requests.find(request => request.path.endsWith("/find"));
+		expect(find).toBeDefined();
+		const query = String((JSON.parse(find?.body ?? "{}") as Record<string, unknown>)["query"]);
+		expect(query).not.toContain("AKIAABCDEFGHIJKLMNOP");
+		expect(query).toContain("[REDACTED]");
+	});
+
 	it("never sends importance, which the route does not document", async () => {
 		const result = await memvidkbBackend.save!(context(), input({ importance: 0.9 }));
 		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
@@ -344,6 +411,206 @@ describe("memvidkb backend save", () => {
 		expect(result.stored).toBe(0);
 		expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.unavailable)).toBe(true);
 		expect(requests).toHaveLength(0);
+	});
+
+	// `.memvidkb`'s `providers` is an operator grant, not decoration: the harness default
+	// is `["litellm"]` (the gateway these workspaces actually sit behind), and every arm
+	// below proves a different edge of that one document. `requests` is the transport spy —
+	// the stub server records only traffic that really left through `client.ts`, so a
+	// refusal that asserts an empty list proves the policy ran BEFORE a socket opened,
+	// which a message-substring match alone could never show.
+	it("names the admitting provider on the wire as the record's producer", async () => {
+		const result = await memvidkbBackend.save!(context(), input({ provider: "litellm" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("litellm");
+	});
+
+	it("trims the named provider before admitting and sending it", async () => {
+		await memvidkbBackend.save!(context(), input({ provider: "  litellm  " }));
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("litellm");
+	});
+
+	it("refuses a provider the context's .memvidkb providers list does not admit, dispatching nothing", async () => {
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(0);
+		expect(result.ids).toEqual([]);
+		expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.forbidden)).toBe(true);
+		// Names the key, the offending value, and the configured list, so one line is
+		// enough for an operator to fix the file.
+		expect(result.message).toContain('provider "openrouter"');
+		expect(result.message).toContain('.memvidkb "providers"');
+		expect(result.message).toContain("litellm");
+		expect(result.message).toContain("Nothing was sent");
+		expect(requests).toHaveLength(0);
+	});
+
+	it('admits any named provider under the "*" wildcard', async () => {
+		await writeConfig({ providers: ["*"] });
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("openrouter");
+	});
+
+	it("restricts nothing when .memvidkb carries an empty providers list", async () => {
+		// Empty is the absence of a rule, not a rule that admits nobody: refusing here would
+		// strip writes from every workspace that never wrote the key. The service's own
+		// `allowedProviders` is the authority in this case.
+		await writeConfig({ providers: [] });
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect(body["provider"]).toBe("openrouter");
+	});
+
+	it("restricts nothing when .memvidkb carries no providers key at all", async () => {
+		// The authoritative reader collapses an absent key to `[]`, which is the arm above;
+		// this pins that the backend does not turn "never configured" into a refusal.
+		await writeConfig({ providers: undefined });
+		const result = await memvidkbBackend.save!(context(), input({ provider: "openrouter" }));
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+	});
+
+	it("sends no provider name when the caller names none, leaving the call to the service", async () => {
+		// A provider the caller cannot name is not a provider the caller may invent: the
+		// field stays off the wire rather than arriving with a guessed gateway.
+		const result = await memvidkbBackend.save!(context(), input());
+		expect(result.stored).toBe(1);
+		expect(requests).toHaveLength(1);
+		const body = JSON.parse(requests[0]?.body ?? "{}") as Record<string, unknown>;
+		expect("provider" in body).toBe(false);
+	});
+});
+
+describe("memvidkb backend edit", () => {
+	function recordDetail(id: string): unknown {
+		return {
+			id,
+			track: "dev",
+			uri: `mv2://dev/${id}`,
+			title: null,
+			tags: [],
+			text: "The rollout uses the legacy ingress.",
+			originActor: "fulton",
+			capturedAt: "2026-11-16T04:00:00Z",
+			lastVerifiedAt: null,
+			derivedFrom: null,
+			supersededBy: null,
+		};
+	}
+
+	it("reports an unknown supersede target as not_found, not as a fault", async () => {
+		// The service owns this answer: it 404s when the prior does not exist. Folding that into
+		// `failed` would hide "you named a record that was never there" behind an outage-shaped
+		// message, which is exactly what a caller that guessed the id needs to be told. The read of
+		// the id succeeds here and carries a matching proof, so what is under test is the service's
+		// 404 on the supersede itself, not the earlier read-back refusal.
+		respond = request =>
+			request.method === "POST" && request.path.endsWith("/supersede")
+				? new Response("{}", { status: 404 })
+				: Response.json(recordDetail("kb-ghost"));
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "update",
+			id: "kb-ghost",
+			content: "corrected",
+			expectedCapturedAt: "2026-11-16T04:00:00Z",
+		});
+		expect(result.status).toBe("not_found");
+		expect(result.message).toContain("Nothing was superseded");
+		expect(result.message).toContain(KNOWLEDGE_ERROR_PREFIX.notFound);
+		expect(requests.filter(request => request.path.endsWith("/supersede"))).toHaveLength(1);
+	});
+
+	it("supersedes with the documented fields and names both records", async () => {
+		respond = request =>
+			request.method === "POST" && request.path.endsWith("/supersede")
+				? Response.json({
+						priorId: "kb-target",
+						newId: "kb-next",
+						priorUri: "mv2://dev/kb-target",
+						newUri: "mv2://dev/kb-next",
+					})
+				: Response.json(recordDetail("kb-target"));
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "update",
+			id: "kb-target",
+			content: "corrected",
+			expectedCapturedAt: "2026-11-16T04:00:00Z",
+		});
+		expect(result.status).toBe("updated");
+		expect(result.message).toContain("kb-target");
+		expect(result.message).toContain("kb-next");
+		const post = requests.find(request => request.path.endsWith("/supersede"));
+		const body = JSON.parse(post?.body ?? "{}") as Record<string, unknown>;
+		// The optional id/capturedAt/provider keys are omitted, never sent empty: the service
+		// would read an empty string as a caller-chosen value. `title` is the one derived field the
+		// contract does carry, and it comes from the corrected text, never from the prior id.
+		expect(Object.keys(body).sort()).toEqual(["content", "originActor", "title"]);
+		expect(body["content"]).toBe("corrected");
+		expect(body["title"]).toBe("corrected");
+	});
+
+	it("refuses an update with no content before anything goes out", async () => {
+		const result = await memvidkbBackend.edit!(context(), { op: "update", id: "kb-target" });
+		expect(result.status).toBe("failed");
+		expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.unavailable)).toBe(true);
+		expect(requests).toEqual([]);
+	});
+
+	it("refuses invalidate by name and changes nothing", async () => {
+		// There is no soft-invalidate route, so the honest answer is that the op does not exist
+		// here — not a write that merely looks like one, and not a silent success.
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "invalidate",
+			id: "kb-target",
+			replacementId: "kb-new",
+		});
+		expect(result.status).toBe("unsupported");
+		expect(result.message).toContain("kb-target is unchanged");
+		expect(requests).toEqual([]);
+	});
+
+	it("never posts an erase for a record the service does not have", async () => {
+		respond = () => new Response("{}", { status: 404 });
+		const result = await memvidkbBackend.edit!(context(), { op: "forget", id: "kb-ghost" });
+		expect(result.status).toBe("not_found");
+		expect(result.message).toContain("Nothing was erased");
+		expect(requests.some(request => request.path.endsWith("/erase"))).toBe(false);
+	});
+
+	it("reports an erase that left frames behind as a failure naming them", async () => {
+		respond = request =>
+			request.method === "POST" && request.path.endsWith("/erase")
+				? Response.json({ framesRemoved: 2, chunksRemoved: 3, residualFrames: ["frame-7"] })
+				: Response.json(recordDetail("kb-target"));
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "forget",
+			id: "kb-target",
+			expectedCapturedAt: "2026-11-16T04:00:00Z",
+		});
+		expect(result.status).toBe("failed");
+		expect(result.message).toContain("frame-7");
+	});
+
+	it("refuses every op while .memvidkb sets remember to off, sending nothing", async () => {
+		await writeConfig({ remember: "off" });
+		for (const op of ["update", "forget", "invalidate"] as const) {
+			const result = await memvidkbBackend.edit!(context(), {
+				op,
+				id: "kb-target",
+				content: "corrected",
+				replacementId: "kb-new",
+			});
+			expect(result.message?.startsWith(KNOWLEDGE_ERROR_PREFIX.forbidden)).toBe(true);
+		}
+		expect(requests).toEqual([]);
 	});
 });
 

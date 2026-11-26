@@ -4,7 +4,7 @@ import { XD_URL_PREFIX } from "@oh-my-pi/pi-tui/tools/xd-url";
 export const MEMORY_BACKEND_TOOL_NAMES = [
 	"retain",
 	"recall",
-	"reflect",
+	"memory_search",
 	"memory_edit",
 	"memory_list",
 	"learn",

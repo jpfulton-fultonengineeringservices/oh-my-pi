@@ -261,12 +261,18 @@ describe("memvidkb edit read-back precondition", () => {
 		]);
 	});
 
-	it("keeps an unresolvable id a not-found failure, ordered ahead of the proof gate", async () => {
+	it("reports an unresolvable id as not_found, ordered ahead of the proof gate", async () => {
 		respond = () => new Response("no such record", { status: 404 });
 		const result = await edit({ op: "forget", id: RECORD_ID });
 
-		expect(result.status).toBe("failed");
-		expect(result.message.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)).toBe(true);
+		// The service answered the prior read with its own `404 not_found:` — an answer about the
+		// record, not an outage — so the status is the one the renderer branches on and the one both
+		// destructive ops report for the same event (`test/memvidkb-verbs-tools.test.ts:363`,
+		// `test/memvidkb-backend.test.ts:574`). What stays pinned here is the ordering: the caller is
+		// told the record is absent rather than "you did not read it first", and nothing is written.
+		expect(result.status).toBe("not_found");
+		expect(result.message).toContain(KNOWLEDGE_ERROR_PREFIX.notFound);
+		expect(result.message).toContain("Nothing was erased");
 		expect(writeRequests()).toEqual([]);
 	});
 

@@ -637,6 +637,10 @@ const ARG_SCHEMAS: Record<string, ArgSchema> = {
 	memory_list: argSchema("limit# offset#"),
 	retain: argSchema("items content context scope"),
 	recall: argSchema("query"),
+	memory_search: argSchema("query context"),
+	// Pre-F-17 spelling, kept for the same reason `find` is kept beside `glob` above: a
+	// transcript stored while the verb was called `reflect` is projected through this table by
+	// its recorded name, and dropping the key would anonymise its arguments less, not more.
 	reflect: argSchema("query context"),
 };
 

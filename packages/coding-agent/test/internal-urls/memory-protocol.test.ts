@@ -844,7 +844,7 @@ describe("MemoryProtocolHandler — hindsight (issue #7587)", () => {
 		await withHindsightSession(async () => {
 			const router = InternalUrlRouter.instance();
 			await expect(router.resolve("memory://a1b2c3d4e5f6")).rejects.toThrow(
-				/Hindsight memories are not addressable via memory:\/\/.*use `recall`.*`reflect`/s,
+				/Hindsight memories are not addressable via memory:\/\/.*use `recall`.*`memory_search`/s,
 			);
 		});
 	});
@@ -892,7 +892,7 @@ describe("MemoryProtocolHandler — file-backed root vs non-local backends (issu
 			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "stale local summary");
 			const settings = Settings.isolated({ "memory.backend": "hindsight" });
 			await expect(InternalUrlRouter.instance().resolve("memory://root", { cwd, settings })).rejects.toThrow(
-				"File-backed memory artifacts only exist with memory.backend=local (active backend: hindsight). Use `recall`/`reflect` to search Hindsight memories.",
+				"File-backed memory artifacts only exist with memory.backend=local (active backend: hindsight). Use `recall`/`memory_search` to search Hindsight memories.",
 			);
 		} finally {
 			setAgentDir(previousAgentDir);

@@ -6,9 +6,14 @@
  * `extensions/lib/knowledge/config.ts` are the document's only two readers, and a
  * third would let the schema drift silently between them — the drift the config repo's
  * `__tests__/knowledge-config-parity.test.ts` exists to catch. Only keys that already
- * exist there are read: `context`, `baseUrl`, `tokenEnvVar`, `tracks`, `remember`,
- * `injectRecall`, `recallMaxBytes`. A new key must land in both readers and that parity
- * test in one change, so nothing here invents one.
+ * exist there are read: `context`, `baseUrl`, `tokenEnvVar`, `providers`, `tracks`,
+ * `remember`, `injectRecall`, `recallMaxBytes`, `startupRecall`. A new key must land in both
+ * readers and that parity test in one change, so nothing here invents one. Of the reader's
+ * keys, `version` is validated there and carries no runtime meaning here. `startupRecall` is
+ * carried, and is the operator naming queries the conversation's own prompt would not think to
+ * ask: `beforeAgentStartPrompt` issues them alongside the prompt at the one recall a
+ * conversation gets (`backend.ts:recallQueries`), and the block they produce is recorded in the
+ * transcript so a resume replays it instead of asking again.
  *
  * The bearer is never stored in `.memvidkb`: the document names the env var holding it,
  * and a missing or empty value is a configuration error, never an unauthenticated call.
@@ -31,6 +36,19 @@ export interface MemvidkbBackendConfig {
 	context: string;
 	/** Tracks this session is permitted to read, in `.memvidkb` order. */
 	tracks: readonly string[];
+	/**
+	 * Gateway providers allowed to be named as the producer of a record this workspace
+	 * writes — the operator's grant, read straight from `.memvidkb`'s `providers`.
+	 *
+	 * Empty — also what an absent key collapses to in the authoritative reader — is
+	 * deliberately NOT a restriction: it defers to the context's own `allowedProviders` on
+	 * the service, so a workspace that never wrote the key keeps writing exactly as before.
+	 * Only a non-empty list restricts, and it admits by exact name or by the `"*"` wildcard
+	 * — the same rule the config repo enforces at
+	 * `extensions/lib/knowledge/config.ts:426-436`, so both planes answer for one document.
+	 * The refusal lives in {@link providerDenial}.
+	 */
+	providers: readonly string[];
 	/** Whether explicit writes are permitted at all. */
 	remember: "off" | "on";
 	/**
@@ -41,6 +59,15 @@ export interface MemvidkbBackendConfig {
 	injectRecall: boolean;
 	/** Byte ceiling for automatically injected recall, enforced by the injecting layer. */
 	recallMaxBytes: number;
+	/**
+	 * Queries the operator names for the recall that opens a conversation, in `.memvidkb`
+	 * order, recalled with the conversation's own prompt rather than instead of it.
+	 *
+	 * Empty is the default and asks nothing beyond the prompt. Each entry is trimmed, dropped
+	 * when blank or already asked by the prompt, and scrubbed of secrets before it leaves this
+	 * process, exactly like the prompt itself — the service logs what it is asked.
+	 */
+	startupRecall: readonly string[];
 }
 
 /** One config load: the resolved backend config, or a prefixed failure. */
@@ -87,9 +114,11 @@ export async function loadMemvidkbBackendConfig(cwd: string): Promise<MemvidkbBa
 			token,
 			context: config.context,
 			tracks: config.tracks,
+			providers: config.providers,
 			remember: config.remember,
 			injectRecall: config.injectRecall,
 			recallMaxBytes: config.recallMaxBytes,
+			startupRecall: config.startupRecall,
 		},
 	};
 }
@@ -117,4 +146,39 @@ export function selectDefaultTrack(
 		};
 	}
 	return { ok: true, value: track };
+}
+
+/**
+ * Refuse a write whose named producer the context's `.memvidkb` does not admit.
+ *
+ * The shape mirrors the config repo's `providerDenial`
+ * (`extensions/lib/knowledge/config.ts:426-436`) exactly: both planes read the same
+ * document, and an operator must get one voice from either side of it. An absent or blank
+ * provider is not refused — the caller named no producer, and the service decides. An
+ * EMPTY list is no restriction at all, deferring to the context's `allowedProviders`
+ * server-side. Only a non-empty list admits, by exact name or by the `"*"` wildcard. The
+ * refusal names the key, the offending value and the admitted list, because one line has
+ * to be enough to fix the file.
+ *
+ * @param config - Context name plus the operator's provider grant from `.memvidkb`.
+ * @param provider - Gateway provider the write attributes its content to, if it names one.
+ * @returns A `knowledge_forbidden:` refusal naming key, value and list; `undefined` when
+ * the provider is admitted or when no provider was named.
+ */
+export function providerDenial(
+	config: { readonly context?: string; readonly providers?: readonly string[] },
+	provider: string | undefined,
+): string | undefined {
+	const requested = provider?.trim();
+	if (requested === undefined || requested.length === 0) return undefined;
+	// Absent is the same absence as empty: no local rule, and the service decides.
+	const granted = config.providers ?? [];
+	if (granted.length === 0) return undefined;
+	if (granted.includes(requested) || granted.includes("*")) return undefined;
+	const admitted = granted.join(", ");
+	return (
+		`${KNOWLEDGE_ERROR_PREFIX.forbidden}provider "${requested}" is not admitted for ` +
+		`context "${config.context ?? "(unknown)"}" by .memvidkb "providers"; this context ` +
+		`admits: ${admitted}. Nothing was sent and no substitute provider was used.`
+	);
 }

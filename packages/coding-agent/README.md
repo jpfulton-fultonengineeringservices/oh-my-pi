@@ -30,7 +30,7 @@ Memory is selected by one setting, `memory.backend` (Settings → Memory tab, or
 - `memvidkb` (default) — the central memvid-kb-rs knowledge service, addressed through the workspace's `.memvidkb` (endpoint plus bearer token). Nothing is contacted until that file resolves, so an embedder never reaches a knowledge service it did not opt into.
 - `off` — no memory subsystem runs.
 
-Because `memvidkb` is the default, a session that never set `memory.backend` gets the memory tools — `recall`, `retain`, `reflect`, `memory_edit` and `memory_list` — instead of no memory at all. Nothing is contacted until the workspace's `.memvidkb` resolves: in a workspace without one, session start succeeds and each of those tools answers `knowledge_invalid_config: No .memvidkb configuration file found in workspace (code CONFIG_NOT_FOUND, workspace <dir>)`, so the operator gets an actionable error naming the workspace rather than a silent no-op or a call to a service nobody configured.
+Because `memvidkb` is the default, a session that never set `memory.backend` gets the memory tools — `recall`, `retain`, `memory_search`, `memory_edit` and `memory_list` — instead of no memory at all. Nothing is contacted until the workspace's `.memvidkb` resolves: in a workspace without one, session start succeeds and each of those tools answers `knowledge_invalid_config: No .memvidkb configuration file found in workspace (code CONFIG_NOT_FOUND, workspace <dir>)`, so the operator gets an actionable error naming the workspace rather than a silent no-op or a call to a service nobody configured.
 
 Switching backends mid-session immediately replaces the live backend, memory tools, listeners, and system-prompt context.
 
@@ -38,21 +38,21 @@ Switching backends mid-session immediately replaces the live backend, memory too
 
 `local`, `hindsight`, `mnemopi`, and `sharpshooter` are retired. The settings panel no longer offers them, and nothing is ever substituted for one: a retired id never resolves to a different store behind the operator's back.
 
-A config left on a retired id migrates at load: `memory.backend` becomes `off`, the session boots with no memory subsystem, and startup logs a notice naming the retired id, what replaced it, and the two values to choose between. The load does not rewrite the file — the migrated value lives only in memory until a save is due, and a save writes it, so until something is saved the file still names the retired id and the notice repeats at each launch. What is still *refused* is a retired id written at runtime — `/settings`, `set_command`, `omp config set` — which raises the actionable error naming the replacement instead of taking effect:
+A config left on a retired id migrates at load: `memory.backend` becomes `off`, the session boots with no memory subsystem, and startup logs a notice naming the retired id, what replaced it, and the two values to choose between. The load does not rewrite the file — the migrated value lives only in memory until a save is due, and a save writes it, so until something is saved the file still names the retired id and the notice repeats at each launch. What is still _refused_ is a retired id written at runtime — `/settings`, `set_command`, `omp config set` — which raises the actionable error naming the replacement instead of taking effect:
 
 ```yaml
 memory:
-  backend: memvidkb # or "off"
+   backend: memvidkb # or "off"
 ```
 
-| Retired id     | Replaced by                                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------------------------ |
-| `local`        | memvid-kb-rs knowledge service; was the local `memory_summary.md` rollout-summarisation pipeline             |
-| `hindsight`    | memvid-kb-rs knowledge service; nothing is deleted server-side, but omp no longer talks to Hindsight         |
-| `mnemopi`      | memvid-kb-rs knowledge service; was the local Mnemopi SQLite store (formerly `mnemosyne`)                     |
-| `sharpshooter` | memvid-kb-rs knowledge service; was the friction-gated project-decision store                                 |
+| Retired id     | Replaced by                                                                                          |
+| -------------- | ---------------------------------------------------------------------------------------------------- |
+| `local`        | memvid-kb-rs knowledge service; was the local `memory_summary.md` rollout-summarisation pipeline     |
+| `hindsight`    | memvid-kb-rs knowledge service; nothing is deleted server-side, but omp no longer talks to Hindsight |
+| `mnemopi`      | memvid-kb-rs knowledge service; was the local Mnemopi SQLite store (formerly `mnemosyne`)            |
+| `sharpshooter` | memvid-kb-rs knowledge service; was the friction-gated project-decision store                        |
 
-The retired implementations and their settings namespaces are still in the tree, pending a separate removal; they are unreachable through the selector, the settings panel, and the memory tools — the memory tools mount only for a live backend, so a retired id gets no `recall`, `retain`, `reflect`, `memory_edit`, `memory_list` or `learn`. The settings enum still accepts the four retired ids so that an existing config loads instead of failing to parse; the value stays observable to a direct reader, and any retired id that reaches the selector is refused there, before a backend is constructed, with an actionable notice.
+The retired implementations and their settings namespaces are still in the tree, pending a separate removal; they are unreachable through the selector, the settings panel, and the memory tools — the memory tools mount only for a live backend, so a retired id gets no `recall`, `retain`, `memory_search`, `memory_edit`, `memory_list` or `learn`. The settings enum still accepts the four retired ids so that an existing config loads instead of failing to parse; the value stays observable to a direct reader, and any retired id that reaches the selector is refused there, before a backend is constructed, with an actionable notice.
 
 ### `memories.enabled`
 

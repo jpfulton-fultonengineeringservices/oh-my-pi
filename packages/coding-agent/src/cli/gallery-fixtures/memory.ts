@@ -1,4 +1,4 @@
-// Gallery fixtures for the long-term memory tools (retain, recall, reflect).
+// Gallery fixtures for the long-term memory tools (retain, recall, memory_search).
 import type { GalleryFixture } from "./types";
 
 export const memoryFixtures: Record<string, GalleryFixture> = {
@@ -63,8 +63,8 @@ export const memoryFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	reflect: {
-		label: "Reflect",
+	memory_search: {
+		label: "Search memory",
 		streamingArgs: { query: "what have we learned about the user's" },
 		args: { query: "What have we learned about the user's tooling preferences?" },
 		result: {
@@ -82,7 +82,7 @@ export const memoryFixtures: Record<string, GalleryFixture> = {
 		},
 		errorResult: {
 			isError: true,
-			content: [{ type: "text", text: "Reflect failed: no memories matched the query." }],
+			content: [{ type: "text", text: "Memory search failed: no memories matched the query." }],
 		},
 	},
 };

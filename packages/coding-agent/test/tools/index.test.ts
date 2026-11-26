@@ -429,13 +429,13 @@ describe("createTools", () => {
 /**
  * The mount half of the memory-backend retirement. Every memory gate in `tools/index.ts` reads
  * `isLiveMemoryBackend`, which derives the live set from the selector's own declaration instead of
- * re-listing ids: a retired id left in one of those lists mounted `recall`/`retain`/`reflect` for a
+ * re-listing ids: a retired id left in one of those lists mounted `recall`/`retain`/`memory_search` for a
  * config whose every call then threw inside `resolveMemoryBackend`, advertising a memory verb no
  * backend could serve. Both routes a name can take are pinned — the default set and an explicit
  * request — because the force-include and the allow-check are separate lists and either could leak.
  */
 describe("createTools memory backend gating", () => {
-	const MEMORY_TOOL_NAMES = ["recall", "retain", "reflect", "memory_edit", "memory_list"];
+	const MEMORY_TOOL_NAMES = ["recall", "retain", "memory_search", "memory_edit", "memory_list"];
 	const RETIRED_BACKENDS = ["local", "hindsight", "mnemopi", "sharpshooter"] as const;
 
 	/** `learn` is gated on the backend as well as on autolearn, so the checks below stay honest. */

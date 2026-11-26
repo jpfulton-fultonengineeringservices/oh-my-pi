@@ -40,6 +40,7 @@ import {
 } from "./dto";
 import { KNOWLEDGE_ERROR_PREFIX, redactToken } from "./errors";
 import { withTimeoutSignal } from "../utils/fetch-timeout";
+import { providerDenial } from "./config";
 
 /** A knowledge call must finish well inside a tool turn; a wedged service must not wedge the agent. */
 export const HTTP_TIMEOUT_MS = 15_000;
@@ -62,11 +63,19 @@ const MAX_DETAIL_CHARS = 400;
  *
  * `tokenEnvVar` travels with the value so a refusal can name the variable an operator has
  * to fix; the value itself is never included in a returned string.
+ *
+ * `context` and `providers` ride along from the resolved `.memvidkb` so the one place a
+ * write crosses the boundary can enforce the operator's provider grant without every
+ * caller threading a policy object through it. They are optional only because a transport
+ * test may name an origin without a policy; the backend always supplies both, and an
+ * omitted `providers` is read as "no local grant configured", which restricts nothing.
  */
 export type MemvidkbEndpoint = {
 	readonly baseUrl: string;
 	readonly tokenEnvVar: string;
 	readonly token: string;
+	readonly context?: string;
+	readonly providers?: readonly string[];
 };
 
 /** One request against the knowledge service. */
@@ -543,7 +552,9 @@ export async function findTrack(
  * caller names the producer explicitly.
  *
  * @param endpoint - Service origin and bearer.
- * @param args - Track, text, producing actor, and any documented optionals.
+ * @param args - Track, text, producing actor, and any documented optionals. A `provider`
+ * is checked against the endpoint's `.memvidkb` grant before anything is sent, and is sent
+ * as `provider` so the record names the gateway that produced its content.
  * @param signal - Caller cancellation.
  * @returns What the service stored, or a prefixed failure; a failure stores nothing.
  */
@@ -553,6 +564,7 @@ export async function rememberRecord(
 		readonly track: string;
 		readonly content: string;
 		readonly originActor: string;
+		readonly provider?: string;
 		readonly title?: string;
 		readonly tags?: readonly string[];
 	},
@@ -565,6 +577,14 @@ export async function rememberRecord(
 	if (!content.ok) return { ok: false, error: content.error };
 	const originActor = requiredText(verb, "originActor", args.originActor);
 	if (!originActor.ok) return { ok: false, error: originActor.error };
+	// The `.memvidkb` "providers" grant is enforced here, at the one boundary a write
+	// crosses, so no caller has to remember to ask: a producer the context does not admit
+	// is refused before a socket opens, rather than reaching the service to be rejected
+	// against its own `allowedProviders` after the body has already left. An empty grant
+	// is not a rule — it defers to the service, exactly as the config repo reads it.
+	const provider = args.provider?.trim() || undefined;
+	const denied = providerDenial(endpoint, provider);
+	if (denied !== undefined) return { ok: false, error: denied };
 	const tags = args.tags?.map(tag => tag.trim()).filter(tag => tag.length > 0);
 	const path = trackPath(track.value, "/records");
 	return callJsonParsed(
@@ -575,6 +595,7 @@ export async function rememberRecord(
 			body: {
 				content: content.value,
 				originActor: originActor.value,
+				provider,
 				title: args.title?.trim() || undefined,
 				tags: tags && tags.length > 0 ? tags : undefined,
 			},

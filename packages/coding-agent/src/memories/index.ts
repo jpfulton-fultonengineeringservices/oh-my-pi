@@ -1477,6 +1477,7 @@ export function normalizeLearnedLesson(input: MemoryBackendSaveInput): MemoryBac
 		...(context === undefined ? {} : { context }),
 		...(input.source === undefined ? {} : { source: input.source }),
 		...(input.importance === undefined ? {} : { importance: input.importance }),
+		...(input.provider === undefined ? {} : { provider: input.provider }),
 	};
 }
 

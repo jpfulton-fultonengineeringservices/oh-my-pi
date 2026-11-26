@@ -1,10 +1,13 @@
 /**
  * Contract tests for the three shared memory tool factories.
  *
- * These exercise the public tool surface (factory gating + execute path) by
- * spying on `HindsightApi.prototype.{retain, recall, reflect}` and stubbing
- * Hindsight state on the fake ToolSession. We deliberately do not boot a real
- * session — these tools only need a populated state accessor and Settings.
+ * These exercise the public tool surface (factory gating + execute path) against the
+ * backends the tools can actually write to: the knowledge service, spied on at
+ * `memvidkbBackend`, and mnemopi's local bank, driven through a real per-session state.
+ * We deliberately do not boot a real session — these tools only need a populated state
+ * accessor and Settings. The retired backends are pinned from the outside only: no
+ * memory tool mounts for one, and an execute that somehow reaches one names the backend
+ * instead of falling through to a writer that no longer exists.
  */
 
 import { Database } from "bun:sqlite";
@@ -14,14 +17,13 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { getManagedSkillsDir } from "@oh-my-pi/pi-coding-agent/autolearn/managed-skills";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
-import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
-import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { createMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend";
 import {
 	RETIRED_MEMORY_BACKENDS,
 	retiredMemoryBackendMessage,
 } from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
+import type { MemoryBackendSaveInput } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
+import { memvidkbBackend } from "@oh-my-pi/pi-coding-agent/memvidkb/backend";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
 import { loadMnemopiConfig, type MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -41,51 +43,17 @@ import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall"
 import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
 import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
-import { currentLoopPhase, isEnoent, logger, TempDir } from "@oh-my-pi/pi-utils";
+import { currentLoopPhase, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
 // Mnemopi is lazy-loaded at runtime; preload it for synchronous state construction.
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);
 
 const TEST_SESSION_ID = "test-session-id";
-let registeredState: HindsightSessionState | undefined;
+
 let registeredMnemopiState: MnemopiSessionState | undefined;
 let tempDbPath: string | undefined;
 let tempDbDir: TempDir | undefined;
-
-function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
-	return {
-		hindsightApiUrl: "http://localhost:8888",
-		hindsightApiToken: null,
-		bankId: null,
-		bankIdPrefix: "",
-		scoping: "global",
-		globalScope: false,
-		bankMission: "",
-		retainMission: null,
-		autoRecall: true,
-		autoRetain: true,
-		retainMode: "full-session",
-		retainEveryNTurns: 3,
-		retainOverlapTurns: 2,
-		retainContext: "omp",
-		recallBudget: "mid",
-		recallMaxTokens: 1024,
-		recallTypes: ["world", "experience"],
-		recallContextTurns: 1,
-		recallMaxQueryChars: 800,
-		recallPromptPreamble: "preamble",
-		debug: false,
-		requestTimeoutMs: 30_000,
-		reflectTimeoutMs: 120_000,
-		recallTimeoutMs: 30_000,
-		retainTimeoutMs: 60_000,
-		mentalModelsEnabled: false,
-		mentalModelAutoSeed: false,
-		mentalModelMaxRenderChars: 16_000,
-		...overrides,
-	};
-}
 
 function makeSession(settings: Settings, sessionId: string | null = TEST_SESSION_ID): ToolSession {
 	return {
@@ -95,51 +63,9 @@ function makeSession(settings: Settings, sessionId: string | null = TEST_SESSION
 		getSessionFile: () => null,
 		getSessionId: () => sessionId,
 		getSessionSpawns: () => null,
-		getHindsightSessionState: () => (sessionId === TEST_SESSION_ID ? registeredState : undefined),
 		getMnemopiSessionState: () => (sessionId === TEST_SESSION_ID ? registeredMnemopiState : undefined),
 	} as unknown as ToolSession;
 }
-
-interface RegisterStateOptions {
-	retainTags?: string[];
-	recallTags?: string[];
-	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
-	config?: Partial<HindsightConfig>;
-	sessionOverrides?: Record<string, unknown>;
-}
-
-function registerState(client: HindsightApi, settings?: Settings, opts: RegisterStateOptions = {}) {
-	registeredState = new HindsightSessionState({
-		sessionId: TEST_SESSION_ID,
-		client,
-		bankId: "test-bank",
-		retainTags: opts.retainTags,
-		recallTags: opts.recallTags,
-		recallTagsMatch: opts.recallTagsMatch,
-		config: makeConfig(opts.config),
-		session: {
-			sessionId: TEST_SESSION_ID,
-			sessionManager: { getEntries: () => [] } as never,
-			emitNotice: () => {},
-			getHindsightSessionState: () => registeredState,
-			...opts.sessionOverrides,
-		} as never,
-		banksSet: new Set(),
-		lastRetainedTurn: 0,
-		hasRecalledForFirstTurn: false,
-	});
-	void settings;
-}
-
-/** Hindsight configs that refuse `scope: "global"` writes, with the error each one raises. */
-const HINDSIGHT_GLOBAL_REJECTIONS = [
-	["while hindsight.globalScope is off", { scoping: "per-project-tagged" }, /set hindsight\.globalScope to true/],
-	[
-		"under per-project scoping",
-		{ scoping: "per-project", globalScope: true },
-		/requires global or per-project-tagged scoping/,
-	],
-] as const;
 
 function makeMnemopiConfig(
 	overrides: (Partial<MnemopiBackendConfig> & Record<string, unknown>) | undefined = {},
@@ -222,29 +148,6 @@ function registerMnemopiState(
 	return registeredMnemopiState;
 }
 
-describe("Hindsight tool factories", () => {
-	beforeEach(() => {
-		resetSettingsForTest();
-		registeredState = undefined;
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-		registeredState = undefined;
-	});
-
-	it("retain/recall/reflect factories return tool instances when Hindsight is configured", () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeSession(settings);
-		expect(MemoryRetainTool.createIf(session)).toBeInstanceOf(MemoryRetainTool);
-		expect(MemoryRecallTool.createIf(session)).toBeInstanceOf(MemoryRecallTool);
-		expect(MemoryReflectTool.createIf(session)).toBeInstanceOf(MemoryReflectTool);
-	});
-});
-
 describe("Mnemopi tool factories", () => {
 	beforeEach(() => {
 		resetSettingsForTest();
@@ -264,16 +167,14 @@ describe("Mnemopi tool factories", () => {
 
 	it("memory tool factories gate on supported backends", () => {
 		const offSettings = Settings.isolated({ "memory.backend": "off", "memories.enabled": false });
-		const hindsightSettings = Settings.isolated({ "memory.backend": "hindsight" });
 		const localSession = makeSession(Settings.isolated({ "memory.backend": "local", "memories.enabled": false }));
 		expect(MemoryRetainTool.createIf(localSession)).toBeNull();
 		expect(MemoryRecallTool.createIf(localSession)).toBeNull();
 		expect(MemoryReflectTool.createIf(localSession)).toBeNull();
 		expect(MemoryEditTool.createIf(makeSession(offSettings))).toBeNull();
-		expect(MemoryEditTool.createIf(makeSession(hindsightSettings))).toBeNull();
 	});
 
-	it("retain/recall/reflect/edit/list factories return tool instances when memory.backend === memvidkb", async () => {
+	it("retain/recall/memory_search/edit/list factories return tool instances when memory.backend === memvidkb", async () => {
 		// The KB is the backend these verbs were written for, so the gate above is not
 		// "only mnemopi gets tools": a configured KB session gets all five, and `memory_list`
 		// — which has no local equivalent — is offered for the KB and nothing else.
@@ -308,7 +209,7 @@ describe("Mnemopi tool factories", () => {
 		}
 	});
 
-	it("retain/recall/reflect/edit factories return tool instances when memory.backend === mnemopi", () => {
+	it("retain/recall/memory_search/edit factories return tool instances when memory.backend === mnemopi", () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		const session = makeSession(settings);
 		expect(MemoryRetainTool.createIf(session)).toBeInstanceOf(MemoryRetainTool);
@@ -320,252 +221,32 @@ describe("Mnemopi tool factories", () => {
 	it("names sibling memory tools by their xd:// URL only when they are mounted as devices", () => {
 		const session = makeSession(Settings.isolated({ "memory.backend": "mnemopi" }));
 		const recall = new MemoryRecallTool(session);
-		const reflect = new MemoryReflectTool(session);
+		const memorySearch = new MemoryReflectTool(session);
 		const edit = new MemoryEditTool(session);
 		const tools = new Map<string, Tool>([
 			["recall", recall],
-			["reflect", reflect],
+			["memory_search", memorySearch],
 			["memory_edit", edit],
 		]);
 		session.xdev = {
 			tools,
 			mountedNames: new Set(["recall", "memory_edit"]),
 			builtInNames: new Set(tools.keys()),
-			isActive: name => name === "reflect",
+			isActive: name => name === "memory_search",
 		};
 
-		expect(reflect.description).toContain("unlike `xd://recall`, blends them");
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		// `memory_search` is deliberately left out of `mountedNames` above, so this also
+		// pins the bare-name spelling of an unmounted sibling.
+		expect(memorySearch.summary).toBe("Search long-term memory for the records bearing on a question");
+		expect(memorySearch.description).toContain("Unlike `xd://recall`, which answers a specific lookup");
+		expect(recall.description).toContain("`memory_search`: the records bearing on a broader question");
 		expect(recall.description).toContain("Before any `xd://memory_edit update`");
 		expect(edit.description).toContain("Only ids returned by `xd://recall`.");
 
 		// A mounted device without a summary makes catalog summaries read its description;
 		// rendering refs must not depend on them, or this recurses without bound.
 		Object.assign(recall, { summary: undefined });
-		expect(recall.description).toContain("`reflect`: synthesized answer");
-	});
-});
-
-describe("retain.execute", () => {
-	let agentDir: TempDir;
-	let originalAgentDir: string;
-
-	beforeEach(() => {
-		resetSettingsForTest();
-		registeredState = undefined;
-		originalAgentDir = getAgentDir();
-		agentDir = TempDir.createSync("@hindsight-retain-");
-		setAgentDir(agentDir.path());
-	});
-
-	afterEach(async () => {
-		vi.restoreAllMocks();
-		registeredState?.dispose();
-		registeredState = undefined;
-		setAgentDir(originalAgentDir);
-		await agentDir.remove();
-	});
-
-	/** Undelivered outbox events, across destinations. */
-	async function outboxEvents(): Promise<string[]> {
-		try {
-			const names = await fs.readdir(path.join(agentDir.path(), "hindsight-outbox"), { recursive: true });
-			return names.filter(name => !name.startsWith("quarantine") && name.endsWith(".json"));
-		} catch (error) {
-			if (isEnoent(error)) return [];
-			throw error;
-		}
-	}
-
-	it("persists the memory and reports success without calling the API", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
-		const retainSpy = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
-		registerState(client, settings);
-
-		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
-		const result = await tool.execute("call-1", { items: [{ content: "user prefers tabs" }] });
-
-		expect(result.content[0]).toEqual({ type: "text", text: "1 memory queued." });
-		// Tool returns before any HTTP work happens.
-		expect(retainBatchSpy).not.toHaveBeenCalled();
-		expect(retainSpy).not.toHaveBeenCalled();
-		expect(await outboxEvents()).toHaveLength(1);
-	});
-
-	it("retains global items untagged, in a request separate from project-tagged items", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
-		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
-		registerState(client, settings, {
-			retainTags: ["project:pi"],
-			config: { scoping: "per-project-tagged", globalScope: true },
-		});
-
-		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
-		const result = await tool.execute("call-mixed", {
-			items: [
-				{ content: "pi uses tabs" },
-				{ content: "the user prefers zsh across projects", scope: "global" },
-				{ content: "pi builds with bun", scope: "project" },
-			],
-		});
-		expect(result.content[0]).toEqual({ type: "text", text: "3 memories queued." });
-		await registeredState?.flushRetainQueue();
-
-		expect(retainBatchSpy).toHaveBeenCalledTimes(2);
-		const requests = retainBatchSpy.mock.calls.map(([, items]) =>
-			items.map(item => ({ content: item.content, tags: item.tags })),
-		);
-		expect(requests).toEqual(
-			expect.arrayContaining([
-				[
-					{ content: "pi uses tabs", tags: ["project:pi"] },
-					{ content: "pi builds with bun", tags: ["project:pi"] },
-				],
-				[{ content: "the user prefers zsh across projects", tags: undefined }],
-			]),
-		);
-	});
-
-	it("sends global and project items in one untagged request when the scope has no project tags", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
-		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
-		registerState(client, settings, { config: { scoping: "global", globalScope: true } });
-
-		await MemoryRetainTool.createIf(makeSession(settings))!.execute("call-global-mode", {
-			items: [{ content: "shared fact" }, { content: "explicitly global fact", scope: "global" }],
-		});
-		await registeredState?.flushRetainQueue();
-
-		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
-		expect(retainBatchSpy.mock.calls[0][1].map(item => ({ content: item.content, tags: item.tags }))).toEqual([
-			{ content: "shared fact", tags: undefined },
-			{ content: "explicitly global fact", tags: undefined },
-		]);
-	});
-
-	it("retains items enqueued without a scope as project-scoped", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
-		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
-		registerState(client, settings, { retainTags: ["project:pi"], config: { scoping: "per-project-tagged" } });
-
-		await registeredState!.retainQueue.enqueue("call-direct", [
-			{ content: "direct caller fact", context: "direct context" },
-		]);
-		await registeredState?.flushRetainQueue();
-
-		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
-		expect(retainBatchSpy.mock.calls[0][1].map(item => ({ content: item.content, tags: item.tags }))).toEqual([
-			{ content: "direct caller fact", tags: ["project:pi"] },
-		]);
-	});
-
-	it.each(HINDSIGHT_GLOBAL_REJECTIONS)(
-		"rejects a global item enqueued directly on the queue %s",
-		async (_label, config, error) => {
-			const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-			registerState(client, undefined, { config });
-
-			await expect(
-				registeredState!.retainQueue.enqueue("call-rejected", [{ content: "cross-project fact", scope: "global" }]),
-			).rejects.toThrow(error);
-			expect(await outboxEvents()).toEqual([]);
-		},
-	);
-
-	it.each(HINDSIGHT_GLOBAL_REJECTIONS)(
-		"rejects a batch with a global item %s before queueing anything",
-		async (_label, config, error) => {
-			const settings = Settings.isolated({ "memory.backend": "hindsight" });
-			const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-			registerState(client, settings, { config });
-
-			const tool = MemoryRetainTool.createIf(makeSession(settings))!;
-			await expect(
-				tool.execute("call-global", {
-					items: [{ content: "project fact" }, { content: "global preference", scope: "global" }],
-				}),
-			).rejects.toThrow(error);
-			expect(await outboxEvents()).toEqual([]);
-		},
-	);
-
-	it("keeps a failed delivery on disk, notifies once per outage, and delivers it on a later flush", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockRejectedValue(new Error("HTTP 503"));
-		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
-		const noticeSpy = vi.fn();
-		registerState(client, settings, { sessionOverrides: { emitNotice: noticeSpy } });
-
-		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
-		await tool.execute("call-x", { items: [{ content: "kept fact" }] });
-		await registeredState?.flushRetainQueue();
-		await registeredState?.flushRetainQueue();
-
-		expect(noticeSpy).toHaveBeenCalledTimes(1);
-		const [level, message, source] = noticeSpy.mock.calls[0];
-		expect(level).toBe("warning");
-		expect(source).toBe("Hindsight");
-		expect(message).toContain("HTTP 503");
-		expect(message).toContain("1 memory kept");
-		expect(await outboxEvents()).toHaveLength(1);
-
-		retainBatchSpy.mockResolvedValue({} as never);
-		await registeredState?.flushRetainQueue();
-		expect(retainBatchSpy.mock.calls.at(-1)?.[1].map(item => item.content)).toEqual(["kept fact"]);
-		expect(await outboxEvents()).toEqual([]);
-	});
-
-	it("flushes a multi-item tool call as a single retainBatch call with per-item context", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
-		registerState(client, settings, { retainTags: ["project:pi"] });
-
-		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
-		const result = await tool.execute("call-batch", {
-			items: [{ content: "fact one" }, { content: "fact two", context: "user override" }],
-		});
-		expect(result.content[0]).toEqual({ type: "text", text: "2 memories queued." });
-
-		await registeredState?.flushRetainQueue();
-
-		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
-		const [bankId, items, options] = retainBatchSpy.mock.calls[0];
-		expect(bankId).toBe("test-bank");
-		expect(options).toEqual(expect.objectContaining({ async: true }));
-		// Same-call items share a publication mtime, so their order within the batch is unspecified.
-		expect(items).toHaveLength(2);
-		expect(items).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					content: "fact one",
-					metadata: { session_id: TEST_SESSION_ID },
-					tags: ["project:pi"],
-				}),
-				expect.objectContaining({
-					content: "fact two",
-					context: "user override",
-					metadata: { session_id: TEST_SESSION_ID },
-					tags: ["project:pi"],
-				}),
-			]),
-		);
-		expect(await outboxEvents()).toEqual([]);
-	});
-
-	it("throws when no per-session state is registered", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
-		await expect(tool.execute("call-2", { items: [{ content: "x" }] })).rejects.toThrow(/not initialised/i);
+		expect(recall.description).toContain("`memory_search`: the records bearing on a broader question");
 	});
 });
 
@@ -807,14 +488,6 @@ describe("retain.execute (Mnemopi backend)", () => {
 });
 
 describe("global memory scope exposure", () => {
-	beforeEach(() => {
-		registeredState = undefined;
-	});
-
-	afterEach(() => {
-		registeredState = undefined;
-	});
-
 	const offersScope = (tool: MemoryRetainTool | LearnTool) => ({
 		schema: JSON.stringify(tool.parameters.toJsonSchema()).includes('"scope"'),
 		prompt: tool.description.includes("scope: global"),
@@ -826,10 +499,9 @@ describe("global memory scope exposure", () => {
 		// compare — asserting on it would test a tool that is never constructed.
 		expect(offersScope(MemoryRetainTool.createIf(session)!)).toEqual({ schema: offered, prompt: offered });
 	};
-	const memorySettings = (backend: "mnemopi" | "hindsight" | "local", overrides: Record<string, unknown> = {}) =>
+	const memorySettings = (backend: "mnemopi" | "local", overrides: Record<string, unknown> = {}) =>
 		Settings.isolated({
 			"memory.backend": backend,
-			"hindsight.apiUrl": "http://localhost:8888",
 			"autolearn.enabled": true,
 			...overrides,
 		});
@@ -840,44 +512,6 @@ describe("global memory scope exposure", () => {
 		["global", true],
 	] as const)("mnemopi backend with %s scoping offers scope: %p", (scoping, offered) => {
 		expectOffered(makeSession(memorySettings("mnemopi", { "mnemopi.scoping": scoping })), offered);
-	});
-
-	it.each([
-		["off", { scoping: "per-project-tagged" }, false],
-		["on under per-project", { scoping: "per-project", globalScope: true }, false],
-		["on under per-project-tagged", { scoping: "per-project-tagged", globalScope: true }, true],
-		["on under global", { scoping: "global", globalScope: true }, true],
-	] as const)("hindsight state with global scope %s offers scope: %p", (_label, config, offered) => {
-		const settings = memorySettings("hindsight");
-		registerState(new HindsightApi({ baseUrl: "http://localhost:8888" }), settings, { config });
-		expectOffered(makeSession(settings), offered);
-	});
-
-	it("follows the Hindsight state's config, not live settings, so it never offers a scope the queue rejects", async () => {
-		// A keep-alive subagent alias keeps the config its parent had when it started; the user enabled
-		// hindsight.globalScope afterwards.
-		const settings = memorySettings("hindsight", {
-			"hindsight.globalScope": true,
-			"hindsight.scoping": "per-project-tagged",
-		});
-		registerState(new HindsightApi({ baseUrl: "http://localhost:8888" }), settings, {
-			config: { scoping: "per-project-tagged", globalScope: false },
-		});
-		const session = makeSession(settings);
-
-		expectOffered(session, false);
-		await expect(
-			MemoryRetainTool.createIf(session)!.execute("alias-global", {
-				items: [{ content: "cross-project fact", scope: "global" }],
-			}),
-		).rejects.toThrow(/set hindsight\.globalScope to true/);
-	});
-
-	it("offers no Hindsight scope before the session's Hindsight state exists", () => {
-		expectOffered(
-			makeSession(memorySettings("hindsight", { "hindsight.globalScope": true, "hindsight.scoping": "global" })),
-			false,
-		);
 	});
 
 	it("requires write approval only for global writes", () => {
@@ -1771,73 +1405,6 @@ describe("Mnemopi backend lifecycle", () => {
 		}
 	});
 });
-describe("recall.execute", () => {
-	beforeEach(() => {
-		resetSettingsForTest();
-		registeredState = undefined;
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-		registeredState = undefined;
-	});
-
-	it("returns the no-results sentinel when recall yields empty", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
-		registerState(client, settings);
-
-		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
-		const result = await tool.execute("call-3", { query: "anything" });
-		expect(result.content[0]).toEqual({ type: "text", text: "No relevant memories found." });
-	});
-
-	it("formats non-empty results with count + UTC timestamp header", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
-			results: [
-				{ text: "fact one", type: "world", id: "1" },
-				{ text: "fact two", id: "2" },
-			],
-		} as never);
-		registerState(client, settings);
-
-		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
-		const result = await tool.execute("call-4", { query: "anything" });
-		const block = (result.content[0] as { text: string }).text;
-		expect(block).toMatch(/^Found 2 relevant memories \(as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/);
-		expect(block).toContain("- fact one [world]");
-		expect(block).toContain("- fact two");
-	});
-
-	it("forwards recall tags + tagsMatch from session state when present", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
-		registerState(client, settings, { recallTags: ["project:pi"], recallTagsMatch: "any" });
-
-		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
-		await tool.execute("call-tags", { query: "anything" });
-
-		expect(recallSpy).toHaveBeenCalledWith(
-			"test-bank",
-			"anything",
-			expect.objectContaining({ tags: ["project:pi"], tagsMatch: "any" }),
-		);
-	});
-
-	it("rethrows underlying client errors", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		vi.spyOn(HindsightApi.prototype, "recall").mockRejectedValue(new Error("HTTP 503"));
-		registerState(client, settings);
-
-		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
-		await expect(tool.execute("call-5", { query: "anything" })).rejects.toThrow(/HTTP 503/);
-	});
-});
 
 describe("recall.execute (Mnemopi backend)", () => {
 	beforeEach(() => {
@@ -2083,47 +1650,6 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 	});
 });
 
-describe("reflect.execute", () => {
-	beforeEach(() => {
-		resetSettingsForTest();
-		registeredState = undefined;
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-		registeredState = undefined;
-	});
-
-	it("returns the reflect text and forwards context", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const reflectSpy = vi
-			.spyOn(HindsightApi.prototype, "reflect")
-			.mockResolvedValue({ text: "Synthesised answer" } as never);
-		registerState(client, settings);
-
-		const tool = MemoryReflectTool.createIf(makeSession(settings))!;
-		const result = await tool.execute("call-6", { query: "what does the user prefer?", context: "background" });
-		expect(reflectSpy).toHaveBeenCalledWith(
-			"test-bank",
-			"what does the user prefer?",
-			expect.objectContaining({ context: "background", budget: "mid" }),
-		);
-		expect((result.content[0] as { text: string }).text).toBe("Synthesised answer");
-	});
-
-	it("falls back to a sentinel when reflect returns blank text", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		vi.spyOn(HindsightApi.prototype, "reflect").mockResolvedValue({ text: "  " } as never);
-		registerState(client, settings);
-
-		const tool = MemoryReflectTool.createIf(makeSession(settings))!;
-		const result = await tool.execute("call-7", { query: "anything" });
-		expect((result.content[0] as { text: string }).text).toBe("No relevant information found to reflect on.");
-	});
-});
-
 describe("reflect.execute (Mnemopi backend)", () => {
 	beforeEach(() => {
 		resetSettingsForTest();
@@ -2256,5 +1782,123 @@ describe("memory.backend retirement", () => {
 			await expect(memory.status()).rejects.toThrow(expected);
 			await expect(memory.list()).rejects.toThrow(expected);
 		}
+	});
+
+	it("mounts no memory tool for a retired backend id", () => {
+		// The three tools used to branch on the retired ids themselves, so a retired
+		// selection reached a client call no session could service. Their gates now name
+		// only the backends they can write to, which is what makes every retired branch
+		// unreachable — this is the assertion that keeps it that way.
+		//
+		// `mnemopi` is the one carve-out, stated rather than assumed: it is retired at the
+		// selector (the runtime arm above refuses it, so its branches are policy-dead too),
+		// but the branches read and write a local SQLite bank rather than a retired HTTP
+		// client, so deleting them belongs to the separate retired-backend removal (F-19b).
+		for (const retired of RETIRED_MEMORY_BACKENDS.filter(backend => backend !== "mnemopi")) {
+			const session = makeSession(Settings.isolated({ "memory.backend": retired }));
+			expect(MemoryRetainTool.createIf(session)).toBeNull();
+			expect(MemoryRecallTool.createIf(session)).toBeNull();
+			expect(MemoryReflectTool.createIf(session)).toBeNull();
+		}
+		const mnemopiSession = makeSession(Settings.isolated({ "memory.backend": "mnemopi" }));
+		expect(MemoryRetainTool.createIf(mnemopiSession)).toBeInstanceOf(MemoryRetainTool);
+		expect(MemoryRecallTool.createIf(mnemopiSession)).toBeInstanceOf(MemoryRecallTool);
+		expect(MemoryReflectTool.createIf(mnemopiSession)).toBeInstanceOf(MemoryReflectTool);
+	});
+
+	it("names the backend when an execute reaches one the tools do not serve", async () => {
+		// Constructed directly: `createIf` refuses these ids, so this is the shape a
+		// re-introduced retired-id gate would produce. The execute path must fail at the
+		// storage boundary naming the backend, never return a result from a writer that
+		// no longer exists.
+		const session = makeSession(Settings.isolated({ "memory.backend": "hindsight" }));
+		await expect(new MemoryRetainTool(session).execute("call-x", { items: [{ content: "x" }] })).rejects.toThrow(
+			/no storage path for the hindsight memory backend/,
+		);
+		await expect(new MemoryRecallTool(session).execute("call-y", { query: "x" })).rejects.toThrow(
+			/no storage path for the hindsight memory backend/,
+		);
+		await expect(new MemoryReflectTool(session).execute("call-z", { query: "x" })).rejects.toThrow(
+			/no storage path for the hindsight memory backend/,
+		);
+	});
+
+	it("does not import the retired hindsight runtime into the live tools", async () => {
+		// The behavioural arms above cannot see a stale `import { … } from "../hindsight/…"`:
+		// an unused import keeps every test green while still pulling the retired runtime —
+		// its client, bank provisioning, session state and outbox — into a session that never
+		// selects it. `hindsight/content` is the one survivor: a pure formatter with no client
+		// behind it, whose `formatCurrentTime` stamps both live recall renderings.
+		const retiredRuntimeModules = ["client", "bank", "state", "config", "outbox"];
+		const survivors: Record<string, string[]> = {
+			"memory-retain.ts": [],
+			"memory-recall.ts": ["content"],
+			"memory-reflect.ts": [],
+		};
+		for (const file of ["memory-retain.ts", "memory-recall.ts", "memory-reflect.ts"]) {
+			const source = await fs.readFile(path.join(import.meta.dir, "..", "src", "tools", file), "utf8");
+			const imports = [...source.matchAll(/from "\.\.\/hindsight\/([^"]+)"/g)].map(match => match[1] ?? "");
+			expect({ file, retired: imports.filter(module => retiredRuntimeModules.includes(module)) }).toEqual({
+				file,
+				retired: [],
+			});
+			expect({ file, imports }).toEqual({ file, imports: survivors[file] ?? [] });
+		}
+	});
+});
+
+/**
+ * The `providers` grant in `.memvidkb` only means anything if a write arrives carrying the
+ * producer it names, and the only honest source of that name is the model the session is
+ * actually running. These arms pin the tool→backend half of that wire: the backend and
+ * client specs prove the gate fires on what arrives here.
+ */
+describe("memvidkb retain write attribution", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	function kbSessionWithModel(provider: string | undefined): ToolSession {
+		const session = makeSession(Settings.isolated({ "memory.backend": "memvidkb" }));
+		if (provider !== undefined) {
+			(session as unknown as { getActiveModel: () => { provider: string } }).getActiveModel = () => ({
+				provider,
+			});
+		}
+		return session;
+	}
+
+	function captureSaves(): MemoryBackendSaveInput[] {
+		const calls: MemoryBackendSaveInput[] = [];
+		vi.spyOn(memvidkbBackend, "save").mockImplementation(async (_context, input) => {
+			calls.push(input);
+			return { backend: "memvidkb", stored: 1, ids: [`rec-${String(calls.length)}`] };
+		});
+		return calls;
+	}
+
+	it("names the session's active model provider on every retained item", async () => {
+		const calls = captureSaves();
+		const result = await new MemoryRetainTool(kbSessionWithModel("litellm")).execute("call-1", {
+			items: [{ content: "first fact" }, { content: "second fact", context: "deploy order" }],
+		});
+		expect(result.details?.count).toBe(2);
+		expect(calls).toHaveLength(2);
+		expect(calls.map(call => call.provider)).toEqual(["litellm", "litellm"]);
+	});
+
+	it("names no provider when the session cannot resolve a model", async () => {
+		// A model the session cannot name is not a licence to guess one: the field stays
+		// unset, the grant admits it as "no producer named", and the service decides.
+		const calls = captureSaves();
+		await new MemoryRetainTool(kbSessionWithModel(undefined)).execute("call-2", {
+			items: [{ content: "a fact with no resolvable model" }],
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.provider).toBeUndefined();
 	});
 });
