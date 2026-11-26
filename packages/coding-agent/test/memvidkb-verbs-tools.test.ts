@@ -362,8 +362,18 @@ describe("memory_edit verbs", () => {
 				: new Response("ok");
 		const tool = MemoryEditTool.createIf(makeSession(memvidkbSettings()))!;
 		const result = await tool.execute("edit-forget-missing", { op: "forget", id: RECORD_ID });
-		expect(editDetails(result).status).toBe("failed");
-		expect(editDetails(result).message.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)).toBe(true);
+		// Both arms below were stale, and the status failure had been hiding the message one:
+		// 33a5296ff7 named the reason a destructive edit did not happen and mapped an
+		// unresolvable id to `status: "not_found"` (backend.ts:1009-1012), updating
+		// test/memvidkb-backend.test.ts but missing this arm. `failed` is reserved for refusals
+		// raised before a request was sent or where an erase left the store partly changed;
+		// here the service answered 404 for the id lookup and nothing was guessed. The message
+		// carries the taxonomy prefix *inside* the prose wrapper (`Nothing was erased:
+		// knowledge_not_found: ...`), so the assertion is toContain, matching the sibling arm
+		// 33a5296ff7 did update at test/memvidkb-backend.test.ts:509 — `startsWith` only held
+		// before that commit wrapped the service error.
+		expect(editDetails(result).status).toBe("not_found");
+		expect(editDetails(result).message).toContain(KNOWLEDGE_ERROR_PREFIX.notFound);
 		expect(requests.filter(request => request.path.endsWith("/erase"))).toHaveLength(0);
 	});
 
