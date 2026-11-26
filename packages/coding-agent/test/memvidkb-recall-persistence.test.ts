@@ -353,6 +353,19 @@ describe("memvidkb recall persistence", () => {
 		expect((staged?.context ?? "").startsWith(`${MEMVID_RECALL_HEADING}\n`)).toBe(true);
 	});
 
+	it("publishes the heading on the package entry point another repository imports, not just its module", async () => {
+		// The published specifiers, deliberately: Plane B resolves the heading through
+		// `@oh-my-pi/pi-coding-agent/memory-backend[/recall-entry]` — the specifier shape its own
+		// extension docs use — so both the barrel and the declared subpath must carry the one
+		// definition. A heading reachable only by module path forces a second literal over there,
+		// and a second literal is exactly the silent drift this constant exists to prevent.
+		const subpath = await import("@oh-my-pi/pi-coding-agent/memory-backend/recall-entry");
+		expect(subpath.MEMVID_RECALL_HEADING).toBe(MEMVID_RECALL_HEADING);
+
+		const surface = await import("@oh-my-pi/pi-coding-agent/memory-backend");
+		expect(surface.MEMVID_RECALL_HEADING).toBe(MEMVID_RECALL_HEADING);
+	});
+
 	it("hands a revived turn the base prompt with the recall block back in it", async () => {
 		// The revive path does not run `beforeAgentStartPrompt`, and the block reaches the base
 		// prompt only through the per-turn build a revive skips. A revive handed the bare base
