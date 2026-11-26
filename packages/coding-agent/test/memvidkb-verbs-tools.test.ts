@@ -373,7 +373,9 @@ describe("memory_edit verbs", () => {
 		const result = await tool.execute("edit-forget-missing", { op: "forget", id: RECORD_ID });
 		// Both arms below were stale, and the status failure had been hiding the message one:
 		// 33a5296ff7 named the reason a destructive edit did not happen and mapped an
-		// unresolvable id to `status: "not_found"` (backend.ts:1009-1012), updating
+		// unresolvable id to `status: "not_found"` — today that mapping is the single prior read
+		// both destructive ops share (backend.ts:1152-1168), so `erase` and `forget` cannot drift
+		// apart about it — updating
 		// test/memvidkb-backend.test.ts but missing this arm. `failed` is reserved for refusals
 		// raised before a request was sent or where an erase left the store partly changed;
 		// here the service answered 404 for the id lookup and nothing was guessed. The message
