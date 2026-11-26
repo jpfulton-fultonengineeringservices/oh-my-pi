@@ -26,8 +26,9 @@ export const MEMORY_RECALL_CHANGES_MESSAGE_TYPE = "memory-recall-changes";
  *
  * A wire contract between two repositories, not a stylistic choice: the config repo's Plane
  * B injector decides whether Plane A already injected by looking for this exact line
- * (`agents/fulton-omp-config/extensions/lib/knowledge-recall.ts`), and refuses its own
- * injection while it is present — the ownership rule F-02 settled. Both producers of the
+ * (`agents/fulton-omp-config/extensions/lib/knowledge-recall-state.ts`, where it is held as
+ * `PLANE_A_RECALL_HEADER`), and refuses its own injection while it is present — the
+ * ownership rule F-02 settled. Both producers of the
  * block read this one constant, and `test/memvidkb-recall-persistence.test.ts` pins its
  * value, so the two planes cannot drift apart silently: renaming it here fails that pin and
  * breaks Plane B's matcher in the same change, instead of quietly re-enabling a second

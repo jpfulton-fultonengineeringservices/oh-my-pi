@@ -20,8 +20,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { memvidkbBackend } from "../src/memvidkb/backend";
+import { cfgMemoryBackend } from "../src/memory-backend/settings";
 import { MEMVID_RECALL_HEADING } from "../src/memory-backend/recall-entry";
-import { resetSettingsForTest } from "../src/config/settings";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { replayRevivedAgentStart } from "../src/task/executor";
 
 const TOKEN = "kb-recall-persist-test-bearer";
 const TOKEN_ENV = "MEMVIDKB_RECALL_PERSIST_TEST_TOKEN";
@@ -124,6 +126,13 @@ function makeSession(
  */
 function deliverTurn(entries: TranscriptEntry[]): void {
 	entries.push({ type: "message", role: "user" });
+}
+
+/** Settings with the native backend selected, as `resolveMemoryBackend` reads them. */
+function memvidkbSettings(): Settings {
+	const settings = Settings.isolated();
+	cfgMemoryBackend.set(settings, "memvidkb");
+	return settings;
 }
 
 function findRequests(): Recorded[] {
@@ -332,8 +341,9 @@ describe("memvidkb recall persistence", () => {
 	it("exposes the block heading as one shared constant, since another repository matches on it", async () => {
 		// A wire contract, not a stylistic choice: the config repo's Plane B injector decides
 		// whether Plane A already injected by looking for this line
-		// (`agents/fulton-omp-config/extensions/lib/knowledge-recall.ts`). Renaming it here
-		// without the matching change there silently re-enables a second injector.
+		// (`agents/fulton-omp-config/extensions/lib/knowledge-recall-state.ts`, as
+		// `PLANE_A_RECALL_HEADER`). Renaming it here without the matching change there
+		// silently re-enables a second injector, which duplicates the block in the prompt.
 		expect(MEMVID_RECALL_HEADING).toBe("## Memvid recall");
 
 		const entries: TranscriptEntry[] = [];
@@ -341,5 +351,66 @@ describe("memvidkb recall persistence", () => {
 		const staged = await memvidkbBackend.beforeAgentStartPrompt(session as never, "how do I deploy?");
 
 		expect((staged?.context ?? "").startsWith(`${MEMVID_RECALL_HEADING}\n`)).toBe(true);
+	});
+
+	it("hands a revived turn the base prompt with the recall block back in it", async () => {
+		// The revive path does not run `beforeAgentStartPrompt`, and the block reaches the base
+		// prompt only through the per-turn build a revive skips. A revive handed the bare base
+		// prompt, which the config repo's injector reads as "Plane A injected nothing" — it
+		// decides whether to run its own injector by looking for this heading. The block is
+		// re-staged from the transcript, never re-read: the revived request is bound to the
+		// prompt being rebuilt, so a fresh query could put different bytes under it.
+		const entries: TranscriptEntry[] = [];
+		const session = makeSession(temp.path(), "/sessions/recall-persist-revive.jsonl", { entries });
+		const staged = await memvidkbBackend.beforeAgentStartPrompt(session as never, "how do I deploy?");
+		expect(staged?.commit()).toBe(true);
+		deliverTurn(entries);
+
+		const handed: { base?: readonly string[]; origin?: string } = {};
+		const revived = {
+			...makeSession(temp.path(), "/sessions/recall-persist-revive.jsonl", { entries }),
+			baseSystemPrompt: ["# Subagent", "Tool roster."],
+			settings: memvidkbSettings(),
+			extensionRunner: {
+				emitBeforeAgentStart: async (
+					_prompt: string,
+					_images: unknown,
+					base: readonly string[],
+					origin?: string,
+				) => {
+					handed.base = base;
+					handed.origin = origin;
+				},
+			},
+		};
+
+		await replayRevivedAgentStart(revived as never);
+
+		expect(handed.origin).toBe("revive");
+		expect(handed.base?.at(-1)).toBe(staged?.context);
+		// One query for the whole conversation: the block came back from the transcript.
+		expect(findRequests()).toHaveLength(1);
+	});
+
+	it("hands a revived turn the base prompt unchanged when the backend declines the recall", async () => {
+		// The re-stage is conditional, so a backend that injects nothing must leave the prompt
+		// exactly as the harness held it — same array, not a copy with a block added.
+		await writeConfigTo(temp.path(), { injectRecall: false });
+		const base = ["# Subagent", "Tool roster."];
+		const handed: { base?: readonly string[] } = {};
+		const revived = {
+			...makeSession(temp.path(), "/sessions/recall-persist-revive-off.jsonl"),
+			baseSystemPrompt: base,
+			settings: memvidkbSettings(),
+			extensionRunner: {
+				emitBeforeAgentStart: async (_prompt: string, _images: unknown, blocks: readonly string[]) => {
+					handed.base = blocks;
+				},
+			},
+		};
+
+		await replayRevivedAgentStart(revived as never);
+
+		expect(handed.base).toBe(base);
 	});
 });
