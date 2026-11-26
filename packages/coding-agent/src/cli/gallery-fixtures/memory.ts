@@ -21,8 +21,15 @@ export const memoryFixtures: Record<string, GalleryFixture> = {
 			],
 		},
 		result: {
-			content: [{ type: "text", text: "2 memories stored." }],
-			details: { count: 2 },
+			// One id per stored item: the id is the handle `memory_edit` and `recall`
+			// take back, so the tool reports it and the gallery shows where it lands.
+			content: [
+				{
+					type: "text",
+					text: ["2 memories stored.", "item 1 (id rec-8f3a1c)", "item 2 (id rec-9b04d7)"].join("\n"),
+				},
+			],
+			details: { count: 2, ids: ["rec-8f3a1c", "rec-9b04d7"] },
 		},
 		errorResult: {
 			isError: true,

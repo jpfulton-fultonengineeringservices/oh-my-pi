@@ -45,6 +45,25 @@ export interface MemoryBackendSearchItem {
 	source?: string;
 	timestamp?: string;
 	score?: number;
+	/** Track the hit was retrieved from, when the backend scopes its reads to one. */
+	track?: string;
+	/** Context name the hit's record is addressable under, when the backend has one. */
+	context?: string;
+	/**
+	 * `knowledge://record/<context>/<track>/<record-id>` a later read resolves to the
+	 * stored text. Absent when the hit addresses no record — an ingested-document
+	 * chunk, say — which is also the signal that `id` is a frame id `memory_edit`
+	 * cannot address.
+	 */
+	pointer?: string;
+	/**
+	 * Whether `content` is the service's clipped snippet rather than the stored text.
+	 * Absent when the backend has no documented clipping; `snippetLimit` names the
+	 * ceiling it was measured against.
+	 */
+	truncated?: boolean;
+	/** Character ceiling `truncated` was measured against, when the backend reports one. */
+	snippetLimit?: number;
 }
 
 export interface MemoryBackendSearchResult {
@@ -132,12 +151,17 @@ export interface MemoryBackendEditInput {
 	content?: string;
 	/** Successor id for `invalidate`, when the backend supports soft supersession. */
 	replacementId?: string;
+	/**
+	 * Read-back proof for a destructive edit: the `capturedAt` of the row the caller
+	 * actually read. A backend that can check it refuses the edit without it.
+	 */
+	expectedCapturedAt?: string;
 }
 
 /** What one edit call did, or precisely what it refused to do. */
 export interface MemoryBackendEditResult {
 	backend: MemoryBackendId;
-	status: "updated" | "forgotten" | "invalidated" | "not_found" | "unsupported" | "failed";
+	status: "updated" | "forgotten" | "invalidated" | "not_found" | "unsupported" | "failed" | "precondition_failed";
 	/** Human-readable outcome, always present so the tool never has to invent one. */
 	message: string;
 }

@@ -34,7 +34,7 @@ import { findTrack, health, listRecords, rememberRecord, type MemvidkbOutcome } 
 import { eraseDocument, inspectRecord, supersedeRecord } from "./client-records";
 import { loadMemvidkbBackendConfig, selectDefaultTrack, type MemvidkbBackendConfig } from "./config";
 import { KNOWLEDGE_ERROR_PREFIX } from "./errors";
-import type { FindResponse, FindResultItem, RecordListing } from "./dto";
+import type { FindResponse, FindResultItem, RecordDetail, RecordListing } from "./dto";
 import { redactMemorySecrets } from "../memory-backend/redact";
 import {
 	findPersistedRecall,
@@ -91,6 +91,46 @@ function hitTimestamp(seconds: number): string | undefined {
 }
 
 /**
+ * Longest `textSnippet` the find route returns.
+ *
+ * The service clips with `bounded()` — `text.trim().chars().take(limit)`
+ * (`src/search/snippet.rs:178-180`) — against its own `SNIPPET_CHARS`
+ * (`src/search/snippet.rs:37`), and the cut carries no ellipsis. `SearchResult`
+ * (`src/search.rs:124-133`) reports neither a length nor a track, so a snippet that
+ * lands on this count is the only evidence a caller gets that the stored text continues
+ * past what it can see, and the track has to be derived from the hit's own uri.
+ *
+ * The ceiling holds only while `find` runs the service's default mode: the temporal branch
+ * clips at `snippet::LISTING_SNIPPET_CHARS` (120, `src/search/timeline.rs:40-41`), and
+ * `FIND_MODES` (`./dto`) already admits `"temporal"`. A `mode` option must therefore carry
+ * its own ceiling, or `truncated` would silently under-report.
+ */
+const SNIPPET_CHARS = 200;
+
+/**
+ * The record id a find hit addresses, when its uri names a record at all.
+ *
+ * `mv2://{track}/records/{id}` is a record and `…/records/{id}/chunk-N` one of its
+ * chunks: both address the same record, which is the handle `memory_edit` and
+ * `memory_list` take. A uri under any other path is an ingested document or one of its
+ * chunks, which those routes cannot resolve, so this stays `undefined` rather than
+ * handing back an id that would fail on the next call. Same derivation the config
+ * repo's renderer uses (`extensions/lib/knowledge/render.ts:136-144`).
+ *
+ * @param track - Track the hit came from; the uri's authority is that name.
+ * @param uri - The hit's `uri`, verbatim from the service.
+ * @returns The record id, or `undefined` when the hit addresses no record.
+ */
+function recordIdFromUri(track: string, uri: string): string | undefined {
+	const prefix = `mv2://${track}/records/`;
+	if (!uri.startsWith(prefix)) return undefined;
+	const rest = uri.slice(prefix.length);
+	const chunkAt = rest.indexOf("/chunk-");
+	const id = chunkAt >= 0 ? rest.slice(0, chunkAt) : rest;
+	return id.length > 0 ? id : undefined;
+}
+
+/**
  * Who produced a record, as the service records it.
  *
  * The route requires a non-empty `originActor` and documents that it is never derived from
@@ -112,6 +152,42 @@ const MEMORY_EDIT_ORIGIN_ACTOR = "agent:omp-memory-edit";
 function originActorFor(input: MemoryBackendSaveInput): string {
 	const source = input.source?.trim();
 	return source && source.length > 0 ? source : SYSTEM_ORIGIN_ACTOR;
+}
+
+/** Cap on the title derived from a record's own text; a title labels a listing row, the body has its own field. */
+const REMEMBER_TITLE_MAX_CHARS = 80;
+
+/** Prefix that marks the caller's `context` as a carried label, so it stays machine-recoverable among free tags. */
+const REMEMBER_CONTEXT_TAG_PREFIX = "context=";
+
+/**
+ * Display title for a remembered record, derived from the record's own first line.
+ *
+ * The title is how operators tell records apart in a listing before erasing one, so it
+ * must be content-distinct — which caller-supplied framing never is. Two distinct records
+ * written under the same `context` sharing that context as their title cost an
+ * erase-by-mistake once the data was live; deriving the label from the text itself makes
+ * distinct content yield distinct titles. Bound to the first line and capped, because a
+ * title is a label, not a second copy of the body.
+ */
+function rememberTitle(content: string): string {
+	const firstLine = content.split("\n", 1)[0]?.trim() ?? "";
+	const chars = Array.from(firstLine);
+	return chars.length > REMEMBER_TITLE_MAX_CHARS
+		? `${chars.slice(0, REMEMBER_TITLE_MAX_CHARS - 1).join("")}…`
+		: firstLine;
+}
+
+/**
+ * The caller's `context` as a `context=<value>` tag, or nothing when absent or blank.
+ *
+ * A tag is a label the record keeps: it lists and filters beside the caller's own tags and
+ * never impersonates the record's identity the way a shared title does.
+ */
+function rememberTags(context: string | undefined): string[] | undefined {
+	const trimmed = context?.trim();
+	if (trimmed === undefined || trimmed.length === 0) return undefined;
+	return [`${REMEMBER_CONTEXT_TAG_PREFIX}${trimmed}`];
 }
 
 /**
@@ -141,6 +217,77 @@ function listFailure(error: string): MemoryBackendListResult {
 
 function editFailure(message: string): MemoryBackendEditResult {
 	return { backend: "memvidkb", status: "failed", message };
+}
+
+/** How a caller reads one record in full: the only surface that serves its text and `capturedAt`. */
+function recordReadRef(config: MemvidkbBackendConfig, track: string, recordId: string): string {
+	return `read \`knowledge://record/${config.context}/${track}/${recordId}\``;
+}
+
+/**
+ * Why a destructive edit may not proceed, or `null` when the caller proved it read the row.
+ *
+ * `update` replaces the stored text wholesale and `forget` erases the whole document behind
+ * the row, so an unverified id destroys state nobody looked at: a recall or list row is a
+ * clipped preview, and a production `forget` erased a record on the strength of one. The row
+ * passed here is the service's own answer to a read of exactly the id named, taken moments
+ * before the write, so it is what the proof is checked against — never a cache.
+ *
+ * @param config - Resolved backend config, for the context name in the read reference.
+ * @param track - The default track the edit is addressed to.
+ * @param requestedId - The id the caller asked to edit.
+ * @param row - The record the read returned for that id.
+ * @param proof - The caller's read-back token: the row's `capturedAt`, if any. The refusal text
+ * names it `captured:` because that is the label the knowledge:// record read prints it under
+ * (`internal-urls/knowledge-protocol.ts:22`); a field name the caller never saw is a hint it
+ * cannot follow.
+ * @param op - Which destructive op is being refused, so the message names the real call.
+ * @returns A refusal carrying the read the caller must perform, or `null` to proceed.
+ */
+function readBackRefusal(
+	config: MemvidkbBackendConfig,
+	track: string,
+	requestedId: string,
+	row: RecordDetail,
+	proof: string | undefined,
+	op: "update" | "forget",
+): MemoryBackendEditResult | null {
+	const readRef = recordReadRef(config, track, requestedId);
+	if (row.id !== requestedId) {
+		// The row behind the named id is not the row read: neither the write nor its target is
+		// the one this call describes, and a retry of the same id cannot make it so.
+		return {
+			backend: "memvidkb",
+			status: "precondition_failed",
+			message:
+				`${KNOWLEDGE_ERROR_PREFIX.forbidden}${op} refused the request before sending it: reading id ${requestedId} ` +
+				`returned record ${row.id}, so the row named is not the row read. Nothing was sent. ` +
+				`Re-issue against the id ${readRef} actually shows.`,
+		};
+	}
+	const supplied = proof?.trim() ?? "";
+	if (supplied.length === 0) {
+		return {
+			backend: "memvidkb",
+			status: "precondition_failed",
+			message:
+				`${KNOWLEDGE_ERROR_PREFIX.unavailable}${op} refused the request before sending it: record ${requestedId} ` +
+				`was never read back, so this edit would destroy state no caller has seen. Nothing was sent. ` +
+				`${readRef} first, then resend the value on its \`captured:\` line as expected_captured_at.`,
+		};
+	}
+	if (supplied !== row.capturedAt) {
+		return {
+			backend: "memvidkb",
+			status: "precondition_failed",
+			message:
+				`${KNOWLEDGE_ERROR_PREFIX.unavailable}${op} refused the request before sending it: expected_captured_at ` +
+				`"${supplied}" is not the value on record ${requestedId}'s \`captured:\` line, which is ` +
+				`"${row.capturedAt}" — the row is not the one read, or it has changed since. Nothing was sent. ` +
+				`${readRef} again and resend what that line reports.`,
+		};
+	}
+	return null;
 }
 
 /** Markdown for the system-prompt append section: what is where, and what this session may write. */
@@ -822,15 +969,32 @@ export const memvidkbBackend = {
 		}
 		if (!found.ok) return searchFailure(query, found.error);
 
-		const items: MemoryBackendSearchItem[] = found.data.results.map(hit => ({
-			// `frameId` is the hit's identity and `uri` the handle the service itself uses,
-			// from which the parent `documentId` derives; they stay in that order.
-			id: hit.frameId,
-			content: hit.textSnippet,
-			source: hit.uri,
-			timestamp: hitTimestamp(hit.timestamp),
-			score: hit.score,
-		}));
+		const items: MemoryBackendSearchItem[] = found.data.results.map(hit => {
+			// The record id when the uri names one, because that is the handle the write
+			// verbs address — a `frameId` cannot be passed back to `memory_edit`. The frame
+			// id stays the fallback for hits that address no record, and `pointer` is what
+			// tells a caller which of the two it is holding.
+			const recordId = recordIdFromUri(track.value, hit.uri);
+			// Code points, matching the service's `chars().take(...)`, so the ceiling is
+			// measured the same way on both sides of the call.
+			const snippetChars = [...hit.textSnippet].length;
+			return {
+				id: recordId ?? hit.frameId,
+				content: hit.textSnippet,
+				source: hit.uri,
+				timestamp: hitTimestamp(hit.timestamp),
+				score: hit.score,
+				// Provenance the hit DTO does not carry and a caller cannot recover from a
+				// clipped snippet alone: which track and context the row lives in, and the
+				// pointer that reads the whole text back.
+				track: track.value,
+				context: config.context,
+				pointer:
+					recordId === undefined ? undefined : `knowledge://record/${config.context}/${track.value}/${recordId}`,
+				truncated: snippetChars >= SNIPPET_CHARS,
+				snippetLimit: SNIPPET_CHARS,
+			};
+		});
 		return { backend: "memvidkb", query, count: items.length, items };
 	},
 
@@ -855,8 +1019,12 @@ export const memvidkbBackend = {
 		// `input.importance` has no counterpart in `RememberRequest`, so it is not sent:
 		// inventing a tag or folding it into the text would put data on the wire the service
 		// never documented. The caller is told on the result rather than left believing it
-		// was stored. `context` maps to the record's display `title`, the only free-text
-		// framing field the DTO has, so it is carried rather than dropped.
+		// was stored. `input.context` never becomes the display `title`: two distinct records
+		// written under the same context would share a title, and the title is how operators
+		// tell records apart before erasing one — a shared caller-written title cost a record
+		// erased by mistake once the data was live. The title is derived from the record's own
+		// first line (`rememberTitle`), and the context travels as a `context=` tag
+		// (`rememberTags`), where it stays recoverable without standing in for identity.
 		const originActor = originActorFor(input);
 		// Scrub both free-text fields before they leave this process. The service stores
 		// exactly what it is handed, and a track is shared by every workspace bound to this
@@ -864,16 +1032,23 @@ export const memvidkbBackend = {
 		// from all of them. These are the helpers the mnemopi plane already applies on its own
 		// write path (`mnemopi/state.ts`), reused rather than duplicated. `originActor` is not
 		// free text: it is an actor label the service validates by shape, not content.
+		const safeContent = redactMemorySecrets(content);
 		const stored = await rememberRecord(config, {
 			track: track.value,
-			content: redactMemorySecrets(content),
+			content: safeContent,
 			originActor,
 			// The gateway that produced the content, named by the caller — the tool layer
 			// reads it off the session's active model. `rememberRecord` checks it against
 			// `config.providers` and refuses before dispatching, so a write never leaves
 			// with a producer the operator did not grant. Absent defers to the service.
 			provider: input.provider,
-			title: input.context === undefined ? undefined : redactMemorySecrets(input.context),
+			// Derived from the already-scrubbed text: the service keeps a title beside the
+			// content, so a credential sitting in the first line must not reach the record
+			// under a second, unscrubbed name. `rememberTitle` takes the first line and caps it.
+			title: rememberTitle(safeContent),
+			// The context is caller free text and a token can be pasted into it, so it is
+			// scrubbed on the way out like the content; `rememberTags` only trims and caps.
+			tags: input.context === undefined ? undefined : rememberTags(redactMemorySecrets(input.context)),
 		});
 		if (!stored.ok) return saveFailure(stored.error);
 		if (input.importance === undefined) return { backend: "memvidkb", stored: 1, ids: [stored.data.id] };
@@ -962,24 +1137,51 @@ export const memvidkbBackend = {
 			};
 		}
 
-		if (input.op === "update") {
-			const content = input.content?.trim() ?? "";
-			if (content.length === 0) {
+		const content = input.content?.trim() ?? "";
+		if (input.op === "update" && content.length === 0) {
+			return {
+				backend: "memvidkb",
+				status: "failed",
+				message: `${KNOWLEDGE_ERROR_PREFIX.unavailable}edit refused the request before sending it: update requires content; nothing was sent`,
+			};
+		}
+
+		// Both destructive ops start with the same full read the caller had to make: the row
+		// returned is the only thing this edit may touch, and the only thing the caller's proof
+		// is checked against. An id the service cannot resolve stays a not-found failure.
+		const current = await inspectRecord(config, { track: track.value, recordId: id });
+		if (!current.ok) {
+			// The service answering "no record by that id in a track this context may see" is
+			// an answer, not an outage — and both destructive ops below address the row only
+			// through this read, so name which op was refused instead of folding a not-found
+			// into the generic fault a caller reads as an outage.
+			if (current.error.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)) {
 				return {
 					backend: "memvidkb",
-					status: "failed",
-					message: `${KNOWLEDGE_ERROR_PREFIX.unavailable}edit refused the request before sending it: update requires content; nothing was sent`,
+					status: "not_found",
+					message:
+						input.op === "update"
+							? `Nothing was superseded: ${current.error}`
+							: `Nothing was erased: ${current.error}`,
 				};
 			}
-			// The service is the only authority on whether the prior exists (it answers 404 for
-			// an unknown id and 409 for one already superseded). Say which of those happened
-			// rather than folding "no such record" into a generic fault: a caller that typed the
-			// id from a listing it never read needs to hear that the target was never there.
+			return editFailure(current.error);
+		}
+		const refusal = readBackRefusal(config, track.value, id, current.data, input.expectedCapturedAt, input.op);
+		if (refusal) return refusal;
+
+		if (input.op === "update") {
+			// A supersede mints a successor and points this row at it, so the corrected text
+			// replaces the stored one wholesale — which is why it needed the read-back above.
 			const swapped = await supersedeRecord(config, {
 				track: track.value,
 				recordId: id,
 				content,
 				originActor: MEMORY_EDIT_ORIGIN_ACTOR,
+				// One derivation, two call sites: the successor's title comes from the
+				// corrected text through the same `rememberTitle` the remember path uses,
+				// so a corrected record is never read back titled by its uuid.
+				title: rememberTitle(content),
 			});
 			if (!swapped.ok) {
 				if (swapped.error.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)) {
@@ -998,21 +1200,8 @@ export const memvidkbBackend = {
 			};
 		}
 
-		// Erase is addressed by `sourceUri`, which the caller does not have: resolve the id
-		// to its uri first, and refuse to delete anything if that read fails.
-		const current = await inspectRecord(config, { track: track.value, recordId: id });
-		if (!current.ok) {
-			// Same distinction as `update`: the service answering "no record by that id in a
-			// track this context may see" is an answer, not an outage.
-			if (current.error.startsWith(KNOWLEDGE_ERROR_PREFIX.notFound)) {
-				return {
-					backend: "memvidkb",
-					status: "not_found",
-					message: `Nothing was erased: ${current.error}`,
-				};
-			}
-			return editFailure(current.error);
-		}
+		// Erase is addressed by `sourceUri`, which the caller does not have: it is taken from the
+		// read above, so no uri is ever erased that was not read back as the record named.
 		const erased = await eraseDocument(config, { track: track.value, sourceUri: current.data.uri });
 		if (!erased.ok) return editFailure(erased.error);
 		const report = erased.data;

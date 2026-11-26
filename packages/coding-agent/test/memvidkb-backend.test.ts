@@ -178,6 +178,12 @@ describe("memvidkb backend search", () => {
 			source: "mv2://dev/deploy.md#chunk-0",
 			timestamp: new Date(1_763_000_000 * 1000).toISOString(),
 			score: 0.5,
+			// Scope travels even when the hit addresses no record; `pointer` stays absent,
+			// which is what marks this `id` as a frame id.
+			track: "dev",
+			context: "fulton",
+			truncated: false,
+			snippetLimit: 200,
 		});
 		// One request, on the route the service registers, with the slash-suffixed base fixed up.
 		expect(requests).toHaveLength(1);
@@ -292,7 +298,12 @@ describe("memvidkb backend save", () => {
 		// workspace label, and the route documents originActor as caller-named provenance
 		// (`src/api/records/dto.rs:30-33`), never a value invented from configuration.
 		expect(body["originActor"]).toBe("agent:omp-memvidkb-backend");
-		expect(body["title"]).toBe("preference");
+		// The caller's context must never become the title: distinct records written under
+		// one context would share a title, and the title is how records are told apart
+		// before an erase. It is derived from the record's own first line; the context
+		// travels as a recoverable `context=` tag instead.
+		expect(body["title"]).toBe("Roll the gateway before the router.");
+		expect(body["tags"]).toEqual(["context=preference"]);
 	});
 
 	it("carries an explicit source as the producing actor", async () => {
@@ -498,19 +509,26 @@ describe("memvidkb backend edit", () => {
 	it("reports an unknown supersede target as not_found, not as a fault", async () => {
 		// The service owns this answer: it 404s when the prior does not exist. Folding that into
 		// `failed` would hide "you named a record that was never there" behind an outage-shaped
-		// message, which is exactly what a caller that guessed the id needs to be told.
+		// message, which is exactly what a caller that guessed the id needs to be told. The read of
+		// the id succeeds here and carries a matching proof, so what is under test is the service's
+		// 404 on the supersede itself, not the earlier read-back refusal.
 		respond = request =>
 			request.method === "POST" && request.path.endsWith("/supersede")
 				? new Response("{}", { status: 404 })
-				: Response.json({});
-		const result = await memvidkbBackend.edit!(context(), { op: "update", id: "kb-ghost", content: "corrected" });
+				: Response.json(recordDetail("kb-ghost"));
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "update",
+			id: "kb-ghost",
+			content: "corrected",
+			expectedCapturedAt: "2026-11-16T04:00:00Z",
+		});
 		expect(result.status).toBe("not_found");
 		expect(result.message).toContain("Nothing was superseded");
 		expect(result.message).toContain(KNOWLEDGE_ERROR_PREFIX.notFound);
 		expect(requests.filter(request => request.path.endsWith("/supersede"))).toHaveLength(1);
 	});
 
-	it("supersedes with only the two documented fields and names both records", async () => {
+	it("supersedes with the documented fields and names both records", async () => {
 		respond = request =>
 			request.method === "POST" && request.path.endsWith("/supersede")
 				? Response.json({
@@ -520,16 +538,23 @@ describe("memvidkb backend edit", () => {
 						newUri: "mv2://dev/kb-next",
 					})
 				: Response.json(recordDetail("kb-target"));
-		const result = await memvidkbBackend.edit!(context(), { op: "update", id: "kb-target", content: "corrected" });
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "update",
+			id: "kb-target",
+			content: "corrected",
+			expectedCapturedAt: "2026-11-16T04:00:00Z",
+		});
 		expect(result.status).toBe("updated");
 		expect(result.message).toContain("kb-target");
 		expect(result.message).toContain("kb-next");
 		const post = requests.find(request => request.path.endsWith("/supersede"));
 		const body = JSON.parse(post?.body ?? "{}") as Record<string, unknown>;
 		// The optional id/capturedAt/provider keys are omitted, never sent empty: the service
-		// would read an empty string as a caller-chosen value.
-		expect(Object.keys(body).sort()).toEqual(["content", "originActor"]);
+		// would read an empty string as a caller-chosen value. `title` is the one derived field the
+		// contract does carry, and it comes from the corrected text, never from the prior id.
+		expect(Object.keys(body).sort()).toEqual(["content", "originActor", "title"]);
 		expect(body["content"]).toBe("corrected");
+		expect(body["title"]).toBe("corrected");
 	});
 
 	it("refuses an update with no content before anything goes out", async () => {
@@ -565,7 +590,11 @@ describe("memvidkb backend edit", () => {
 			request.method === "POST" && request.path.endsWith("/erase")
 				? Response.json({ framesRemoved: 2, chunksRemoved: 3, residualFrames: ["frame-7"] })
 				: Response.json(recordDetail("kb-target"));
-		const result = await memvidkbBackend.edit!(context(), { op: "forget", id: "kb-target" });
+		const result = await memvidkbBackend.edit!(context(), {
+			op: "forget",
+			id: "kb-target",
+			expectedCapturedAt: "2026-11-16T04:00:00Z",
+		});
 		expect(result.status).toBe("failed");
 		expect(result.message).toContain("frame-7");
 	});

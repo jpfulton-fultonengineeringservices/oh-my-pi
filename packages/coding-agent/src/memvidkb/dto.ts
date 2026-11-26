@@ -34,7 +34,7 @@ export type FieldShape = Record<string, FieldKind>;
 /** The value type a shape describes, so a response field name is written once. */
 export type Shaped<S extends FieldShape> = { readonly [K in keyof S]: FieldValue<S[K]> };
 
-/** One hit of `POST /memories/{id}/find` (`SearchResult`, `src/search.rs:115-124`). */
+/** One hit of `POST /memories/{id}/find` (`SearchResult`, `src/search.rs:121-133`). */
 export const FIND_RESULT = {
 	frameId: "string",
 	/** Parent document URI; chunk frames are attributed to the ingested doc. */
@@ -47,7 +47,7 @@ export const FIND_RESULT = {
 	timestamp: "number",
 } as const satisfies FieldShape;
 
-/** The non-array fields of a find page (`SearchResponse`, `src/search.rs:129-136`). */
+/** The non-array fields of a find page (`SearchResponse`, `src/search.rs:135-145`). */
 export const FIND_PAGE = {
 	query: "string",
 	limit: "number",
@@ -56,7 +56,11 @@ export const FIND_PAGE = {
 	mode: "string",
 } as const satisfies FieldShape;
 
-/** `POST /memories/{track}/records` answer (`RememberResponse`, `src/api/records/dto.rs:79-98`). */
+/**
+ * `POST /memories/{track}/records` answer (`RememberResponse`, `src/api/records/dto.rs:90-114`).
+ * The deployed service emits `lastVerifiedAt` on this answer too (`dto.rs:110-111`) — `null`
+ * when the record was never verified — so the shape carries it.
+ */
 export const REMEMBER_RESPONSE = {
 	id: "string",
 	uri: "string",
@@ -66,10 +70,12 @@ export const REMEMBER_RESPONSE = {
 	tags: "strings",
 	originActor: "string",
 	capturedAt: "string",
+	/** `null` when never verified; the same spelling the listing and detail answers use. */
+	lastVerifiedAt: "optstring",
 	derivedFrom: "optstring",
 } as const satisfies FieldShape;
 
-/** One row of `GET /memories/{track}/records` (`RecordListItem`, `src/api/records/dto.rs:148-170`). */
+/** One row of `GET /memories/{track}/records` (`RecordListItem`, `src/api/records/dto.rs:161-186`). */
 export const RECORD_LIST_ITEM = {
 	id: "string",
 	uri: "string",
@@ -84,7 +90,7 @@ export const RECORD_LIST_ITEM = {
 	textSnippet: "string",
 } as const satisfies FieldShape;
 
-/** The non-array fields of the bounded record listing (`RecordListResponse`, `dto.rs:175-186`). */
+/** The non-array fields of the bounded record listing (`RecordListResponse`, `src/api/records/dto.rs:188-202`). */
 export const RECORD_PAGE = {
 	track: "string",
 	total: "number",
@@ -94,7 +100,7 @@ export const RECORD_PAGE = {
 
 /**
  * One full record from `GET /memories/{track}/records/{record_id}` (`RecordResponse`,
- * `src/api/records/dto.rs:100-126`). The only response that carries `text`: the listing
+ * `src/api/records/dto.rs:116-142`). The only response that carries `text`: the listing
  * route deliberately serves a clipped snippet instead.
  */
 export const RECORD_DETAIL = {
@@ -113,7 +119,7 @@ export const RECORD_DETAIL = {
 
 /**
  * `POST /memories/{track}/records/{record_id}/supersede` answer (`SupersedeResponse`,
- * `src/api/records/dto.rs:188-200`). Both ids and both URIs come back so the caller can
+ * `src/api/records/dto.rs:204-216`). Both ids and both URIs come back so the caller can
  * say which record was replaced and which one now stands, without a second read.
  */
 export const SUPERSEDE_RESPONSE = {
@@ -159,7 +165,7 @@ export type SupersedeResponse = Shaped<typeof SUPERSEDE_RESPONSE>;
 /** What an erase call actually removed, per the service's own accounting. */
 export type EraseReport = Shaped<typeof ERASE_REPORT>;
 
-/** Modes `POST /memories/{id}/find` accepts (`SearchMode`, `src/search.rs:32-44`, snake_case). */
+/** Modes `POST /memories/{id}/find` accepts (`SearchMode`, `src/search.rs:40-53`, snake_case). */
 export const FIND_MODES = ["lexical", "semantic", "hybrid", "temporal"] as const;
 
 /** One find retrieval mode. */

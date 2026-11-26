@@ -2,7 +2,7 @@ name: CI
 
 on:
    push:
-      branches: [main]
+      branches: [main, fulton/rebase-v18.20.0]
       paths:
          - "packages/**"
          - "crates/**"
@@ -128,7 +128,7 @@ jobs:
          # fetch-tags to main refs.
          - uses: actions/checkout@v4
            with:
-              fetch-tags: ${{ github.ref == 'refs/heads/main' }}
+              fetch-tags: ${{ contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) }}
          - name: Detect release tag at HEAD
            id: detect
            shell: bash
@@ -140,7 +140,7 @@ jobs:
                 refs/tags/v[0-9]*)
                   release_tag="${{ github.ref_name }}"
                   ;;
-                refs/heads/main)
+                refs/heads/main|refs/heads/fulton/rebase-v18.20.0)
                   if [ "${{ github.event_name }}" != "pull_request" ]; then
                     release_tag=$(git tag --points-at HEAD | grep -E '^v[0-9]' | head -n1 || true)
                   fi
@@ -161,7 +161,16 @@ jobs:
 
    check:
       name: Lint, type check & web build
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      # Runner selection, all 12 sites: the vmon-large/from=omp-ci pool is
+      # registered on the upstream repo, so it only exists for can1357/*. A fork
+      # has zero runners carrying that label, so a push run there sits queued
+      # until GitHub's queue timeout and then fails -- keying on the event alone
+      # (the old expression) sent pushes straight into that hole. PRs keep
+      # running hosted, upstream pushes keep their vmon sandboxes, and a fork
+      # push now runs the same jobs on GitHub-hosted runners instead of never.
+      # There is no vmon Bazel repository or remote cache there, so the Bazel
+      # jobs build cold and the darwin targets fetch their SDK from Apple.
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -244,7 +253,7 @@ jobs:
    rust_validate:
       name: Validate Rust workspace (bazel)
       if: github.event_name != 'pull_request'
-      runs-on: vmon-large/from=omp-ci
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -297,7 +306,7 @@ jobs:
    # with required checks.
    native_addons:
       name: Build native addons (bazel)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       # actions: write lets main prune superseded addon cache entries.
       permissions:
          contents: read
@@ -433,13 +442,13 @@ jobs:
          # looks it up and the probe and save below talk to GitHub.
          - name: Locate GitHub's cache service
            id: gh-results
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref)
            uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
            with:
               script: core.setOutput("url", process.env.ACTIONS_RESULTS_ORL || process.env.ACTIONS_RESULTS_URL)
          - name: Probe native addon cache entry
            id: natives-cache-probe
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref)
            continue-on-error: true
            uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            env:
@@ -449,7 +458,7 @@ jobs:
               key: ${{ steps.natives-key.outputs.key }}
               lookup-only: true
          - name: Save native addon cache entry
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.natives-cache-probe.outputs.cache-hit != 'true'
            continue-on-error: true
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            env:
@@ -458,7 +467,7 @@ jobs:
               path: ci-natives
               key: ${{ steps.natives-key.outputs.key }}
          - name: Prune superseded native addon cache entries
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
+           if: github.event_name != 'pull_request' && contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.natives-cache-probe.outputs.cache-hit != 'true'
            continue-on-error: true
            shell: bash
            env:
@@ -466,7 +475,7 @@ jobs:
               PREFIX: ${{ steps.natives-key.outputs.prefix }}
            run: |
               # Best-effort: a failed prune leaves eviction to GitHub's LRU.
-              gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main --key "$PREFIX" \
+              gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$PREFIX" \
                   --sort created_at --order desc --limit 100 --json id --jq '.[2:][].id' \
                 | while read -r id; do
                     gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
@@ -488,7 +497,7 @@ jobs:
    native_addons_cross:
       name: Build native addons (bazel, cross targets)
       if: github.event_name != 'pull_request'
-      runs-on: vmon-large/from=omp-ci
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       steps:
          - uses: actions/checkout@v4
          - id: cache
@@ -553,7 +562,7 @@ jobs:
 
    test_coding_agent_native:
       name: "Test coding-agent native/unit (TS) ${{ matrix.shard }}"
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -584,7 +593,7 @@ jobs:
 
    test_workspace:
       name: Test TS workspace fast
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 20
@@ -601,7 +610,7 @@ jobs:
 
    test_coding_agent_singleton:
       name: Test coding-agent singleton/global-state (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 20
@@ -618,7 +627,7 @@ jobs:
 
    test_ts_native:
       name: Test TS native/integration packages
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -637,7 +646,7 @@ jobs:
 
    test_coding_agent_ui:
       name: Test coding-agent UI/TUI (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -654,7 +663,7 @@ jobs:
 
    test_coding_agent_runtime:
       name: Test coding-agent runtime/session (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -673,7 +682,7 @@ jobs:
 
    test_smoke:
       name: Test CLI smoke (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 15
@@ -688,7 +697,7 @@ jobs:
 
    install_methods:
       name: Install method smoke tests
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name != 'pull_request' && github.repository_owner == 'can1357') && 'vmon-large/from=omp-ci' || 'ubuntu-22.04' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       steps:
@@ -852,11 +861,11 @@ jobs:
               name: omp-export-viewer
               path: packages/coding-agent/export-assets/*.js
               if-no-files-found: error
-         # Main-only save, after the build so it is off the leg's critical
+         # Default-branch-only save, after the build so it is off the leg's critical
          # path: caches saved on a tag or branch are readable only by that ref
          # yet count against the shared 10 GB repo cache quota.
          - name: Save bun store
-           if: github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+           if: contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.bun-cache.outputs.cache-hit != 'true'
            continue-on-error: true
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
@@ -999,10 +1008,10 @@ jobs:
               restore-keys: |
                  bun-${{ runner.os }}-
          - run: bun install --frozen-lockfile
-         # Main-only save: caches saved on a tag or branch are readable only by
+         # Default-branch-only save: caches saved on a tag or branch are readable only by
          # that ref yet count against the shared 10 GB repo cache quota.
          - name: Save bun store
-           if: github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+           if: contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.bun-cache.outputs.cache-hit != 'true'
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
               path: ~/.bun/install/cache
@@ -1193,10 +1202,10 @@ jobs:
               restore-keys: |
                  bun-${{ runner.os }}-
          - run: bun install --frozen-lockfile
-         # Main-only save: caches saved on a tag or branch are readable only by
+         # Default-branch-only save: caches saved on a tag or branch are readable only by
          # that ref yet count against the shared 10 GB repo cache quota.
          - name: Save bun store
-           if: github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+           if: contains(fromJSON('["refs/heads/main","refs/heads/fulton/rebase-v18.20.0"]'), github.ref) && steps.bun-cache.outputs.cache-hit != 'true'
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
               path: ~/.bun/install/cache

@@ -276,7 +276,10 @@ describe("retain.execute (Mnemopi backend)", () => {
 			items: [{ content: "user prefers tabs", context: "editor configuration" }],
 		});
 
-		expect(result.content[0]).toEqual({ type: "text", text: "1 memory stored." });
+		// The tool also names the id it wrote, so the count sentence is asserted as the
+		// line it is rather than as the whole result; test/memory-retain-ids.test.ts
+		// pins the id text itself.
+		expect(result.content[0]).toEqual({ type: "text", text: expect.stringContaining("1 memory stored.") });
 
 		// Verify the memory was actually stored by recalling it
 		const recallTool = MemoryRecallTool.createIf(makeSession(settings))!;
@@ -299,7 +302,7 @@ describe("retain.execute (Mnemopi backend)", () => {
 			],
 		});
 
-		expect(result.content[0]).toEqual({ type: "text", text: "3 memories stored." });
+		expect(result.content[0]).toEqual({ type: "text", text: expect.stringContaining("3 memories stored.") });
 
 		// Verify all memories are recallable
 		const recallTool = MemoryRecallTool.createIf(makeSession(settings))!;
@@ -377,7 +380,7 @@ describe("retain.execute (Mnemopi backend)", () => {
 			items: [{ content: "the user prefers zsh across projects", scope: "global" }],
 		});
 
-		expect(result.content[0]).toEqual({ type: "text", text: "1 memory stored." });
+		expect(result.content[0]).toEqual({ type: "text", text: expect.stringContaining("1 memory stored.") });
 		const projectRows = state.memory.beam.db.query("SELECT content FROM working_memory").all() as Array<{
 			content: string;
 		}>;
