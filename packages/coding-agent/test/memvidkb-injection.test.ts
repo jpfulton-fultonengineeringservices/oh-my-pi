@@ -4,9 +4,10 @@
  *
  * The service is stubbed in-process with `Bun.serve` exactly as `test/memvidkb-backend.test.ts`
  * does, and the client is never mocked, so every arm here drives real `fetch` traffic through
- * `src/memvidkb/client.ts`. The sessions are fakes exposing only the two members the hooks
- * read (`sessionManager.getCwd`/`getSessionFile` and `agent.state.messages`), which is the same
- * surface `test/hindsight-backend.test.ts` fakes for its own backend.
+ * `src/memvidkb/client.ts`. The sessions are fakes exposing only the members the hooks read —
+ * `sessionManager.getCwd`/`getSessionFile`, the transcript branch a delivered recall is recorded
+ * on (`getBranch`/`appendCustomEntry`), and `agent.state.messages` — which is the same surface
+ * `test/hindsight-backend.test.ts` fakes for its own backend.
  *
  * The centre of gravity is the cache-stability freeze. A central knowledge service is written
  * to by other workspaces at arbitrary times, so a running conversation must not see its prompt
@@ -86,24 +87,48 @@ function dropConfig(dir: string): void {
 	rmSync(`${dir}/.memvidkb`, { force: true });
 }
 
+/** One entry of a fake transcript; only the fields the recall record uses are modelled. */
+interface FakeTranscriptEntry {
+	type: string;
+	customType?: string;
+	data?: unknown;
+	role?: string;
+}
+
 interface FakeRecallSession {
 	agent: { state: { messages: unknown[] } };
-	sessionManager: { getCwd: () => string; getSessionFile: () => string | null };
+	sessionManager: {
+		getCwd: () => string;
+		getSessionFile: () => string | null;
+		getBranch: () => FakeTranscriptEntry[];
+		appendCustomEntry: (type: string, data: unknown) => void;
+	};
 	sessionFile: string | null;
+	/** The transcript this fake stands for: the recall record `commit` writes lands here. */
+	entries: FakeTranscriptEntry[];
 }
 
 /**
  * A session exposing only what the two hooks read. `messages` is mutable so an arm can
  * simulate the first request going out, which is the event the freeze keys on.
+ * `getBranch`/`appendCustomEntry` are the transcript half: a delivered recall is recorded there
+ * (`../src/memory-backend/recall-entry`), so the fake has a real branch to record into and to
+ * read back, rather than a member that would throw the first time persistence touched it.
  */
 function makeSession(cwd: string, sessionFile: string, messages: unknown[] = []): FakeRecallSession {
+	const entries: FakeTranscriptEntry[] = [];
 	return {
 		agent: { state: { messages } },
 		sessionManager: {
 			getCwd: () => cwd,
 			getSessionFile: () => sessionFile,
+			getBranch: () => entries,
+			appendCustomEntry: (type, data) => {
+				entries.push({ type: "custom", customType: type, data });
+			},
 		},
 		sessionFile,
+		entries,
 	};
 }
 

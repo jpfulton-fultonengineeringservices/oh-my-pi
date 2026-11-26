@@ -7,12 +7,13 @@
  * third would let the schema drift silently between them — the drift the config repo's
  * `__tests__/knowledge-config-parity.test.ts` exists to catch. Only keys that already
  * exist there are read: `context`, `baseUrl`, `tokenEnvVar`, `providers`, `tracks`,
- * `remember`, `injectRecall`, `recallMaxBytes`. A new key must land in both readers and
- * that parity test in one change, so nothing here invents one. Of the reader's keys,
- * `version` is validated there and carries no runtime meaning here, and `startupRecall`
- * is still not carried: a query at session start is honest only once a recalled block can
- * be persisted and replayed byte-identically on resume, which is the startup-recall and
- * persistence slice's own work — not a key this module decided to ignore.
+ * `remember`, `injectRecall`, `recallMaxBytes`, `startupRecall`. A new key must land in both
+ * readers and that parity test in one change, so nothing here invents one. Of the reader's
+ * keys, `version` is validated there and carries no runtime meaning here. `startupRecall` is
+ * carried, and is the operator naming queries the conversation's own prompt would not think to
+ * ask: `beforeAgentStartPrompt` issues them alongside the prompt at the one recall a
+ * conversation gets (`backend.ts:recallQueries`), and the block they produce is recorded in the
+ * transcript so a resume replays it instead of asking again.
  *
  * The bearer is never stored in `.memvidkb`: the document names the env var holding it,
  * and a missing or empty value is a configuration error, never an unauthenticated call.
@@ -58,6 +59,15 @@ export interface MemvidkbBackendConfig {
 	injectRecall: boolean;
 	/** Byte ceiling for automatically injected recall, enforced by the injecting layer. */
 	recallMaxBytes: number;
+	/**
+	 * Queries the operator names for the recall that opens a conversation, in `.memvidkb`
+	 * order, recalled with the conversation's own prompt rather than instead of it.
+	 *
+	 * Empty is the default and asks nothing beyond the prompt. Each entry is trimmed, dropped
+	 * when blank or already asked by the prompt, and scrubbed of secrets before it leaves this
+	 * process, exactly like the prompt itself — the service logs what it is asked.
+	 */
+	startupRecall: readonly string[];
 }
 
 /** One config load: the resolved backend config, or a prefixed failure. */
@@ -108,6 +118,7 @@ export async function loadMemvidkbBackendConfig(cwd: string): Promise<MemvidkbBa
 			remember: config.remember,
 			injectRecall: config.injectRecall,
 			recallMaxBytes: config.recallMaxBytes,
+			startupRecall: config.startupRecall,
 		},
 	};
 }

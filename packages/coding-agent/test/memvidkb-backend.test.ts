@@ -350,7 +350,14 @@ describe("memvidkb backend save", () => {
 		// here independently of the compaction path.
 		await writeConfig({ injectRecall: true });
 		const session = {
-			sessionManager: { getCwd: () => temp.path(), getSessionFile: () => `${temp.path()}/s1.jsonl` },
+			sessionManager: {
+				getCwd: () => temp.path(),
+				getSessionFile: () => `${temp.path()}/s1.jsonl`,
+				// A delivered recall is recorded on the transcript branch, so the fake needs the
+				// two members `../src/memory-backend/recall-entry` reads and writes.
+				getBranch: () => [] as never[],
+				appendCustomEntry: () => {},
+			},
 			agent: { state: { messages: [] } },
 		} as never;
 		await memvidkbBackend.beforeAgentStartPrompt!(session, "compare the id AKIAABCDEFGHIJKLMNOP rotations");
